@@ -1,0 +1,9 @@
+[project]
+name = "fastid-benchmark"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "locust>=2.44.0",
+    "pydantic-settings>=2.14.1",
+    "requests>=2.34.2",
+]
