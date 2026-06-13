@@ -1,24 +1,15 @@
 import requests
-from locust import HttpUser, between, task, events
+from locust import HttpUser, between, task
 
-from fastid_benchmark.config import PROVIDERS, ProviderSettings
+from fastid_benchmark.config import PROVIDERS
 
-@events.init_command_line_parser.add_listener
-def init_parser(parser):
-    parser.add_argument(
-        "--system",
-        type=str,
-        default="authentik",
-        choices=["fastid", "keycloak", "authentik"],
-        help="System to test: fastid, keycloak, or authentik"
-    )
 
 class TokenUser(HttpUser):
-    wait_time = between(0.5, 2)  # пауза между запросами от одного пользователя
+    # pause between requests from one user
+    wait_time = between(0.5, 2)
 
     def on_start(self) -> None:
-       system_name = self.environment.parsed_options.system
-       self.config = PROVIDERS[system_name]
+        self.config = PROVIDERS[self.host]
 
     @task
     def get_token(self) -> None:

@@ -167,6 +167,7 @@ services:
       AUTHENTIK_POSTGRESQL__PASSWORD: ${PG_PASS}
       AUTHENTIK_POSTGRESQL__USER: ${PG_USER:-postgres}
       AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?secret key required}
+      AUTHENTIK_WEB__WORKERS: ${AUTHENTIK_WEB__WORKERS:-}
     image: ${AUTHENTIK_IMAGE:-ghcr.io/goauthentik/server}:${AUTHENTIK_TAG:-2026.2.2}
     ports:
       - ${COMPOSE_PORT_HTTP:-9000}:9000
@@ -176,10 +177,10 @@ services:
     volumes:
       - ./authentik-data:/data
       - ./authentik-custom-templates:/templates
-#    deploy:
-#      resources:
-#        limits:
-#          cpus: '1'
+    deploy:
+      resources:
+        limits:
+          cpus: ${CPU_LIMIT:-0}
 
   authentik-worker:
     command: worker
@@ -203,6 +204,10 @@ services:
       - ./authentik-data:/data
       - ./authentik-certs:/certs
       - ./authentik-custom-templates:/templates
+    deploy:
+      resources:
+        limits:
+          cpus: ${CPU_LIMIT:-0}
 
   # KEYCLOAK
   keycloak-server:
@@ -218,6 +223,7 @@ services:
       KC_DB_URL: jdbc:postgresql://${PG_KEYCLOAK_HOST:-keycloak-pgbouncer}:5432/${PG_KEYCLOAK_DB:-keycloak}
       KC_DB_USERNAME: ${PG_USER:-postgres}
       KC_DB_PASSWORD: ${PG_PASS:?database password required}
+      KC_HTTP_POOL_MAX_THREADS: ${KC_HTTP_POOL_MAX_THREADS:-}
     ports:
       - "8087:8080"
       - "10000:10000"
@@ -230,10 +236,10 @@ services:
       interval: 30s
       retries: 3
       timeout: 5s
-#    deploy:
-#      resources:
-#        limits:
-#          cpus: '1'
+    deploy:
+      resources:
+        limits:
+          cpus: ${CPU_LIMIT:-0}
 
   # FASTID
   fastid-server:
@@ -256,6 +262,7 @@ services:
       FASTID_SMTP_ENABLED: ${FASTID_SMTP_ENABLED:-true}
       FASTID_SMTP_HOST: ${FASTID_SMTP_HOST:-mailpit}
       FASTID_SMTP_PORT: ${FASTID_SMTP_PORT:-1025}
+      FASTID_GUNICORN_WORKERS: ${FASTID_GUNICORN_WORKERS:-}
 
     volumes:
       - "./certs:/opt/fastid/certs"
@@ -266,10 +273,10 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-#    deploy:
-#      resources:
-#        limits:
-#          cpus: '1'
+    deploy:
+      resources:
+        limits:
+          cpus: ${CPU_LIMIT:-0}
 
 volumes:
   pg_data:
