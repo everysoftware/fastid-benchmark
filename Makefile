@@ -1,4 +1,4 @@
-RESULTS_FILE = results/cpu_$(CPU)/$(NAME)_$(USERS)_$(RAMP)_$(DURATION)
+RESULTS_FILE = temp/cpu_$(CPU)/$(NAME)_$(USERS)_$(RAMP)_$(DURATION)
 
 restart:
 	docker compose restart
@@ -28,3 +28,7 @@ test-token-high:
 
 test-token-very-high:
 	make test-token USERS=2000 RAMP=50 DURATION=120 NAME=$(NAME) CPU=$(CPU)
+
+lint:
+	ruff check . --fix
+	ruff format .

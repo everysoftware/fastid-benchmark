@@ -12,3 +12,40 @@ dependencies = [
     "requests>=2.34.2",
     "seaborn>=0.13.2",
 ]
+
+[tool.ruff]
+line-length = 120
+indent-width = 4
+target-version = "py311"
+output-format = "concise"
+
+[tool.ruff.lint]
+select = [
+    "ALL"
+]
+ignore = [
+    "D",  # docstrings
+    "DOC",  # docstrings
+    "ANN",
+    "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed in `var`
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+    "W191",  # indentation contains tabs
+    "RUF012",  # mutable class attributes should be annotated with `typing.ClassVar`
+    "S101",  # use of assert detected
+    "TRY003",  # avoid specifying long messages outside the exception class
+    "PLR6301",  # method could be a function, class method, or static method
+    "T201",
+    "RUF002",
+    "RUF003",
+
+    # Handled by formatter later
+    "ISC001",  # single line implicit string concatenation
+    "COM812",  # missing trailing comma
+    "E501",  # line too long
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.17",
+]
