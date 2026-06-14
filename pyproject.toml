@@ -4,6 +4,11 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "locust>=2.44.0",
+    "matplotlib>=3.11.0",
+    "numpy>=2.4.6",
+    "pandas>=3.0.3",
+    "pandas-stubs~=3.0.3",
     "pydantic-settings>=2.14.1",
     "requests>=2.34.2",
+    "seaborn>=0.13.2",
 ]
