@@ -111,9 +111,11 @@ fastid-benchmark/
 ├── fastid_benchmark/        # Locust test scripts
 │   ├── test_token.py        # Main test scenario (Client Credentials)
 │   └── config.py            # IAM provider configurations
+├── analyzer/                # Automatic plot generation
 ├── scripts/                 # Database initialisation scripts
 ├── certs/                   # Auto‑generated JWT keys (ignored by git)
 └── results/                 # Benchmark outputs (CSV, HTML)
+
 ```
 
 ---
