@@ -1,0 +1,9 @@
+  System  Users  RPS at 1 core  Max RPS Scaling factor (max/1c)
+  FastID    100             74       74                    1.00
+  FastID    500            343      358                    1.04
+  FastID   1000            355      732                    2.06
+  FastID   2000            324     1057                    3.26
+Keycloak    100             61       74                    1.21
+Keycloak    500            101      357                    3.52
+Keycloak   1000            115      731                    6.33
+Keycloak   2000            110      930                    8.46

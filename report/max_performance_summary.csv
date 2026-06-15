@@ -1,0 +1,11 @@
+System,CPU cores,Max RPS,Users at max,P95 (ms),Failures
+Keycloak,1,115,1000,10000,0
+Keycloak,2,275,1000,3100,0
+Keycloak,4,752,2000,1500,0
+Keycloak,8,929,2000,1100,0
+Keycloak,16,930,2000,1100,0
+FastID,1,355,1000,1800,0
+FastID,2,688,1000,390,0
+FastID,4,1057,2000,760,0
+FastID,8,1009,2000,870,0
+FastID,16,1003,2000,900,0

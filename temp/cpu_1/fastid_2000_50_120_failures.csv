@@ -1,0 +1,2 @@
+Method,Name,Error,Occurrences,First Seen,Last Seen
+POST,/api/v1/token,"CatchResponseError(""Status 500: {'msg': 'Internal Server Error', 'type': 'unexpected_error'}, <Response [500]>"")",28,2026-06-14T11:30:51Z,2026-06-14T11:30:51Z

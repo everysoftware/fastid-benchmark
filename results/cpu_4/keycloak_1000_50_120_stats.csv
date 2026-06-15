@@ -1,0 +1,3 @@
+Type,Name,Request Count,Failure Count,Median Response Time,Average Response Time,Min Response Time,Max Response Time,Average Content Size,Requests/s,Failures/s,50%,66%,75%,80%,90%,95%,98%,99%,99.9%,99.99%,100%
+POST,/realms/test-realm/protocol/openid-connect/token,83605,0,10,69.2894072531469,4.55750001128763,2373.7581000023056,2457.0,697.8301101515348,0.0,10,15,49,99,230,410,490,530,1300,2200,2400
+,Aggregated,83605,0,10,69.2894072531469,4.55750001128763,2373.7581000023056,2457.0,697.8301101515348,0.0,10,15,49,99,230,410,490,530,1300,2200,2400
