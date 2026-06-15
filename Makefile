@@ -1,4 +1,4 @@
-RESULTS_FILE = temp/cpu_$(CPU)/$(NAME)_$(USERS)_$(RAMP)_$(DURATION)
+RESULTS_FILE = results/cpu_$(CPU)/$(NAME)_$(USERS)_$(RAMP)_$(DURATION)
 
 restart:
 	docker compose restart

@@ -1,4 +1,3 @@
-```markdown
 # FastID Benchmark
 
 **Load testing suite for FastID, Keycloak and Authentik IAM systems**
@@ -11,13 +10,15 @@
 
 ## 📌 Overview
 
-This repository contains a comprehensive **load testing and benchmarking framework** for comparing the performance of three popular open‑source IAM solutions:
+This repository contains a comprehensive **load testing and benchmarking framework** for comparing the performance of
+three popular open‑source IAM solutions:
 
 - **FastID 2.0** – asynchronous Python IAM (FastAPI)
 - **Keycloak** – Java‑based IAM (Quarkus)
 - **Authentik** – Python + Go hybrid IAM
 
-The test suite focuses on the **Client Credentials Grant** flow (OAuth 2.0) which is the most demanding machine‑to‑machine authentication scenario.  
+The test suite focuses on the **Client Credentials Grant** flow (OAuth 2.0) which is the most demanding
+machine‑to‑machine authentication scenario.  
 Tests are designed to measure:
 
 - **Throughput** (RPS – requests per second)
@@ -25,7 +26,8 @@ Tests are designed to measure:
 - **Scalability** across different CPU core counts (1, 2, 4, 8, 16)
 - **Resource efficiency** (RAM usage, CPU utilisation)
 
-All tests run inside **Docker** containers with controlled resource limits (`cpus`). Results are automatically aggregated into CSV files and HTML reports (via Locust).
+All tests run inside **Docker** containers with controlled resource limits (`cpus`). Results are automatically
+aggregated into CSV files and HTML reports (via Locust).
 
 ---
 
@@ -55,10 +57,12 @@ cp .env.example .env
 
 Generate strong random passwords:
 
-```bash
+```
+bash
 cat > .env << EOF
-POSTGRES_PASSWORD=$(openssl rand -base64 32 | tr -d '\n')
+PG_PASS=$(openssl rand -base64 32 | tr -d '\n')
 REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d '\n')
+AUTHENTIK_SECRET_KEY=$(openssl rand -base64 80 | tr -d '\n')
 EOF
 ```
 
@@ -80,13 +84,6 @@ Available test levels:
 
 Available systems: `fastid`, `keycloak`, `authentik`.
 
-### 4. Run a complete benchmark suite
-
-```bash
-make benchmark-all
-```
-
-This will execute all test levels for all three systems on 1, 2, 4, 8 and 16 CPU cores.  
 Results are saved in the `results/` directory.
 
 ---
@@ -128,13 +125,14 @@ Key parameters are controlled via environment variables in the `.env` file.
 
 ### Important settings for each IAM system
 
-| System     | Main performance knobs |
-|------------|------------------------|
-| FastID     | `FASTID_GUNICORN_WORKERS`, `FASTID_DB_POOL_SIZE`, `FASTID_REDIS_POOL_SIZE` |
-| Keycloak   | `KC_HTTP_POOL_MAX_THREADS`, `KC_DB_POOL_MAX_SIZE` |
-| Authentik  | `AUTHENTIK_WEB__WORKERS`, `AUTHENTIK_WEB__THREADS` |
+| System    | Main performance knobs                                                     |
+|-----------|----------------------------------------------------------------------------|
+| FastID    | `FASTID_GUNICORN_WORKERS`, `FASTID_DB_POOL_SIZE`, `FASTID_REDIS_POOL_SIZE` |
+| Keycloak  | `KC_HTTP_POOL_MAX_THREADS`, `KC_DB_POOL_MAX_SIZE`                          |
+| Authentik | `AUTHENTIK_WEB__WORKERS`, `AUTHENTIK_WEB__THREADS`                         |
 
-CPU core limits are applied using `cpuset` (e.g. `cpuset: '0'` for 1 core) inside the Docker Compose service definitions.
+CPU core limits are applied using `cpuset` (e.g. `cpuset: '0'` for 1 core) inside the Docker Compose service
+definitions.
 
 ---
 
@@ -156,57 +154,4 @@ POST,/api/v1/token,87446,0,732.27,0.0,7,17,27
 ```
 
 You can also generate comparison plots using the included Python analysis scripts (see `analyzer/` directory).
-
----
-
-## 🧪 Reproducing the paper results
-
-The results presented in the master’s thesis (chapter 7) can be reproduced by running:
-
-```bash
-make benchmark-all
-```
-
-After execution, the `results/` folder will contain all raw data.  
-Use the `analyzer/` scripts to generate aggregated tables and the plots shown in the thesis.
-
----
-
-## 🛠️ Troubleshooting
-
-### Port conflicts
-
-If ports `6432` (PostgreSQL) or `6379` (Redis) are already in use, change them in the `docker-compose.yml` file.
-
-### “pg_isready not found” in PgBouncer healthcheck
-
-This is a known harmless warning – the healthcheck still works, you can ignore it.
-
-### Authentik fails to start with many workers
-
-Authentik may require additional memory when `WORKERS` is high. Increase the container memory limit in `docker-compose.yml` (`mem_limit: 2G`).
-
-### Locust “ConnectionError” during high ramp‑up
-
-Reduce the ramp‑up rate by modifying the `RAMP` variable in the Makefile targets.
-
----
-
-## 📚 References
-
-- [FastID source code](https://github.com/everysoftware/fastid)
-- [FastLink – Python integration library](https://github.com/everysoftware/fastlink)
-- [FastID observability stack](https://github.com/everysoftware/fastid-observability)
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License – see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🤝 Contributing
-
-Issues and pull requests are welcome. When adding new test scenarios, please follow the existing structure and update the documentation accordingly.
 
