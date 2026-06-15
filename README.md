@@ -133,7 +133,7 @@ Key parameters are controlled via environment variables in the `.env` file.
 | Keycloak  | `KC_HTTP_POOL_MAX_THREADS`, `KC_DB_POOL_MAX_SIZE`                          |
 | Authentik | `AUTHENTIK_WEB__WORKERS`, `AUTHENTIK_WEB__THREADS`                         |
 
-CPU core limits are applied using `cpuset` (e.g. `cpuset: '0'` for 1 core) inside the Docker Compose service
+CPU core limits are applied using `cpus` (e.g. `cpus: 1` for 1 core) inside the Docker Compose service
 definitions.
 
 ---
