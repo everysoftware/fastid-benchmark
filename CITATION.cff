@@ -1,0 +1,28 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: FastID Benchmark
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Ivan
+    family-names: Stasevich
+    email: pravitel2015ify@gmail.com
+repository-code: 'https://github.com/everysoftware/fastid'
+url: 'https://everysoftware.github.io/fastid/'
+abstract: >-
+  Comprehensive load testing and benchmarking suite for FastID, Keycloak, and Authentik IAM solutions
+keywords:
+  - fastid
+  - oauth2
+  - sso
+  - keycloak
+  - authentik
+  - locust
+  - benchmark
+  - iam
+  - load-testing
+license: MIT
