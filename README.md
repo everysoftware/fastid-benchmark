@@ -1,159 +1,184 @@
 # FastID Benchmark
 
-**Load testing suite for FastID, Keycloak and Authentik IAM systems**
+Docker Compose and Locust benchmarks for FastID, Keycloak, and Authentik using
+OAuth 2.0 `client_credentials` and form-based client ID/secret authentication.
 
-[![Python 3.12+](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
-[![Locust](https://img.shields.io/badge/Locust-2.20+-green.svg)](https://locust.io/)
-[![Docker](https://img.shields.io/badge/Docker-26+-blue.svg)](https://www.docker.com/)
+The default comparison preserves each product's signing algorithm. It measures
+native implementations under equal IAM resource ceilings; it does **not** imply
+identical cryptographic work. Token algorithms, claim names, extra tokens, and
+response sizes are recorded. Known native differences are explained in
+[`token-policy.json`](token-policy.json); unexplained differences stop the run.
 
----
+## Setup
 
-## 📌 Overview
+Requires Docker Compose, Python 3.11+, `uv`, Make, and OpenSSL. Run commands from
+the repository root. These services are a local benchmark deployment using HTTP.
 
-This repository contains a comprehensive **load testing and benchmarking framework** for comparing the performance of
-three popular open‑source IAM solutions:
-
-- **FastID 2.0** – asynchronous Python IAM (FastAPI)
-- **Keycloak** – Java‑based IAM (Quarkus)
-- **Authentik** – Python + Go hybrid IAM
-
-The test suite focuses on the **Client Credentials Grant** flow (OAuth 2.0) which is the most demanding
-machine‑to‑machine authentication scenario.  
-Tests are designed to measure:
-
-- **Throughput** (RPS – requests per second)
-- **Latency percentiles** (P50, P95, P99)
-- **Scalability** across different CPU core counts (1, 2, 4, 8, 16)
-- **Resource efficiency** (RAM usage, CPU utilisation)
-
-All tests run inside **Docker** containers with controlled resource limits (`cpus`). Results are automatically
-aggregated into CSV files and HTML reports (via Locust).
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Docker & Docker Compose
-- Python 3.12+ (for Locust)
-- Make (optional, for easy test execution)
-- OpenSSL (for generating test keys)
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/everysoftware/fastid-benchmark.git
-cd fastid-benchmark
-```
-
-### 2. Set up environment variables
-
-Copy the example file and adjust if needed:
-
-```bash
+```sh
 cp .env.example .env
+uv sync --locked
+mkdir -p certs
+openssl rand -hex 32 > certs/secret.key
+openssl genrsa -out certs/jwt-private.pem 2048
+openssl rsa -in certs/jwt-private.pem -pubout -out certs/jwt-public.pem
 ```
 
-Generate strong random passwords:
+Generate local infrastructure secrets without discarding the benchmark settings:
 
-```
-bash
-cat > .env << EOF
-PG_PASS=$(openssl rand -base64 32 | tr -d '\n')
-REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d '\n')
-AUTHENTIK_SECRET_KEY=$(openssl rand -base64 80 | tr -d '\n')
-EOF
-```
-
-### 3. Run a single test
-
-Example: run a baseline test (100 users) for FastID on 1 CPU core:
-
-```bash
-make test-token-baseline NAME=fastid CPU=1
+```sh
+uv run python - <<'PY'
+import secrets
+from dotenv import set_key
+for name in ('PG_PASS', 'REDIS_PASSWORD', 'AUTHENTIK_SECRET_KEY', 'AUTHENTIK_BOOTSTRAP_TOKEN'):
+    set_key('.env', name, secrets.token_urlsafe(48))
+PY
 ```
 
-Available test levels:
+Keep the same database passwords when using existing Docker volumes. Likewise,
+bootstrap tokens only initialize **new** Authentik installations. For an existing
+installation, set `AUTHENTIK_API_TOKEN` to an administrative API token.
 
-- `test-token-smoke` – 10 users, 5 ramp, 30s
-- `test-token-baseline` – 100 users, 10 ramp, 60s
-- `test-token-medium` – 500 users, 25 ramp, 90s
-- `test-token-high` – 1000 users, 50 ramp, 120s
-- `test-token-very-high` – 2000 users, 50 ramp, 120s
+Set client IDs and secrets in `.env`. Keep grant types `client_credentials`,
+scopes empty, and legacy `BENCHMARK_*_USERNAME` / `PASSWORD` fields unset or empty.
+Endpoint defaults match Compose ports: FastID 8012, Keycloak 8087, Authentik 9000.
+Keycloak uses a dedicated `benchmark` realm, not `master`.
 
-Available systems: `fastid`, `keycloak`, `authentik`.
+Provision each system once:
 
-Results are saved in the `results/` directory.
-
----
-
-## 📊 Test matrix
-
-| Test level | Users | Ramp‑up (users/s) | Duration (s) | CPU cores tested |
-|------------|-------|-------------------|--------------|------------------|
-| smoke      | 10    | 5                 | 30           | 1,2,4,8,16       |
-| baseline   | 100   | 10                | 60           | 1,2,4,8,16       |
-| medium     | 500   | 25                | 90           | 1,2,4,8,16       |
-| high       | 1000  | 50                | 120          | 1,2,4,8,16       |
-| very‑high  | 2000  | 50                | 120          | 1,2,4,8,16       |
-
----
-
-## 📁 Repository structure
-
-```
-fastid-benchmark/
-├── Makefile                 # Test execution targets
-├── docker-compose.yml       # Full stack (PostgreSQL, Redis, PgBouncer, IAM services)
-├── .env.example             # Environment variables template
-├── cpu_env/                 # CPU‑specific environment files (optional)
-├── fastid_benchmark/        # Locust test scripts
-│   ├── test_token.py        # Main test scenario (Client Credentials)
-│   └── config.py            # IAM provider configurations
-├── analyzer/                # Automatic plot generation
-├── scripts/                 # Database initialisation scripts
-├── certs/                   # Auto‑generated JWT keys (ignored by git)
-└── results/                 # Benchmark outputs (CSV, HTML)
-
+```sh
+make provision NAME=fastid CPU=1
+make provision NAME=keycloak CPU=1
+make provision NAME=authentik CPU=1
+make preflight CPU=1
 ```
 
----
+Provisioning creates a minimal Keycloak service-account client and an Authentik
+provider/application named `benchmark`, with no optional profile/email mappings
+and a 300-second access-token lifetime (one second rounding is allowed in observations). It preserves existing signing settings.
+For FastID, existing working client credentials are reused; to create a missing
+client, provide `BENCHMARK_FASTID_ADMIN_TOKEN`. Compose sets FastID's token lifetime
+to 300 seconds and production mode explicitly, without changing its algorithm.
 
-## 🔧 Configuration
+The pinned Authentik version returns an additional ID token even for empty scopes.
+Its native claim and response costs remain in measurements and are documented in
+the policy. New image versions may change these behaviors: review the policy
+rather than automatically accepting new exceptions.
 
-All infrastructure components (PostgreSQL, Redis, PgBouncer) are defined in `docker-compose.yml`.  
-Key parameters are controlled via environment variables in the `.env` file.
+## Run comparisons
 
-### Important settings for each IAM system
+```sh
+# Three trials per system, separately for paced and saturation workloads.
+make compare CPU=1
 
-| System    | Main performance knobs                                                     |
-|-----------|----------------------------------------------------------------------------|
-| FastID    | `FASTID_GUNICORN_WORKERS`, `FASTID_DB_POOL_SIZE`, `FASTID_REDIS_POOL_SIZE` |
-| Keycloak  | `KC_HTTP_POOL_MAX_THREADS`, `KC_DB_POOL_MAX_SIZE`                          |
-| Authentik | `AUTHENTIK_WEB__WORKERS`, `AUTHENTIK_WEB__THREADS`                         |
+# Full CPU matrix; runs sequentially, with the order shuffled within each repeat.
+make compare CPU="1 2 4 8 16" REPEATS=5 SEED=42
 
-CPU core limits are applied using `cpus` (e.g. `cpus: 1` for 1 core) inside the Docker Compose service
-definitions.
+# Check sensitivity to the Authentik server/worker CPU allocation.
+make compare CPU=1 SPLITS="0.5 0.75 0.9"
 
----
-
-## 📈 Interpreting results
-
-Each test generates:
-
-- **`*_stats.csv`** – aggregated statistics (RPS, average latency, percentiles)
-- **`*_stats_history.csv`** – time‑series data (RPS and latency per second)
-- **`*_failures.csv`** – any request failures
-- **`*_exceptions.csv`** – exceptions during the test
-- **`*.html`** – interactive Locust report
-
-A typical output snippet:
-
-```csv
-Type,Name,Request Count,Failure Count,Requests/s,Failures/s,50%,95%,99%
-POST,/api/v1/token,87446,0,732.27,0.0,7,17,27
+# View the schedule without stopping containers or sending requests.
+uv run python -m fastid_benchmark.run --dry-run --cpus 1 --repeats 3
 ```
 
-You can also generate comparison plots using the included Python analysis scripts (see `analyzer/` directory).
+The runner stops IAM containers and unused supporting services when finished.
+Each trial stops competing IAM containers and unused supporting services, starts
+only the selected stack, checks its token policy, and waits for all Locust users
+to spawn. It then warms up for 60 seconds, resets statistics in the **same** process,
+and measures for 120 seconds. Database contents and caches are not cleared: this
+is a warmed steady-state comparison, not a cold-start test. Randomized repeated
+trials reduce order effects; they do not remove unrelated host workloads.
 
+`paced` retains a random 0.5–2 second pause per user. `saturation` has no think time.
+It is a fixed-concurrency throughput trial; increase concurrency until throughput
+plateaus before claiming maximum capacity. A saturated load generator or shared
+dependency invalidates a capacity claim. Run on an otherwise idle host with enough
+CPU and RAM for the IAM stack, dependencies, and the load generator.
+
+`SIGNING_PROFILE=native` is the default and does not require matching algorithms.
+`SIGNING_PROFILE=hs256` requires HS256; `SIGNING_PROFILE=rs256` requires RS256 and
+2048-bit public keys. These options **check** the deployed services; they never
+reconfigure them. For the RSA profile, set each provider's `JWKS_URL` first.
+Equal algorithms alone do not remove documented claim and extra-token costs.
+
+Single-system targets use the same runner, with one trial and paced load:
+
+| Target | Users | Ramp (users/s) | Measured seconds |
+|--------|------:|---------------:|-----------------:|
+| `test-token-smoke` | 10 | 5 | 30 |
+| `test-token-baseline` | 100 | 10 | 60 |
+| `test-token-medium` | 500 | 25 | 90 |
+| `test-token-high` | 1000 | 50 | 120 |
+| `test-token-very-high` | 2000 | 50 | 120 |
+
+For example, `make test-token-baseline NAME=fastid CPU=1 MODE=saturation`.
+`WARMUP=60` controls warm-up independently of the measured duration.
+Every provider uses the same 10-second request deadline by default. The runner's
+`--request-timeout` option changes it for all systems in that run and is recorded
+in `session.json`; do not silently lengthen it only for a slower provider.
+Transport failures are reported by exception class (e.g. `ReadTimeout`), not as
+an invented HTTP status code 0.
+
+## Resource budgets
+
+| System/container | CPU ceiling | RAM ceiling |
+|------------------|-------------|-------------|
+| FastID server | Selected CPU | 4 GiB |
+| Keycloak server | Selected CPU | 4 GiB |
+| Authentik server | 75% of selected CPU | 3 GiB |
+| Authentik worker | 25% of selected CPU | 1 GiB |
+
+Profiles cover 1, 2, 4, 8, and 16 CPUs. Compose without a profile defaults to a
+combined 1 CPU and 4 GiB per IAM system. These are hard ceilings, not reservations.
+Authentik's split is fixed; idle worker CPU cannot be borrowed by the server.
+Sensitivity trials change the CPU split while retaining the same combined budget
+and the same 3/1 GiB memory split.
+
+Shared infrastructure is outside the IAM budget, with fixed limits across trials:
+
+| Dependency | CPUs | RAM |
+|------------|-----:|-----|
+| PostgreSQL | 2 | 4 GiB |
+| Each active PgBouncer | 0.5 | 256 MiB |
+| Redis (FastID dependency) | 1 | 1 GiB |
+| Mailpit (FastID dependency) | 0.25 | 128 MiB |
+
+This is equal **IAM** allocation with bounded dependencies, not equal total-stack
+allocation. Redis and Mailpit usage is part of FastID's reported dependency cost.
+All images, including dependencies, are pinned by registry digest. Changing an
+image requires updating its full `*_IMAGE` reference; the runner rejects mutable
+tags. Keycloak uses production `start`, local single-node cache, and an HTTP
+readiness check that verifies the response status.
+
+## Results and checks
+
+New artifacts go under `results/runs/<UTC timestamp>/`, separated by system, CPU,
+mode, CPU split, and repeat. Historical `results/cpu_*` files are retained and must
+not be combined with the new policy's results.
+
+- `session.json`: schedule, seed, host/Docker capacity, source hashes, and signing profile.
+- `preflight_*.json`, `policy.json`: token-cost metadata and explained differences.
+- `deployment*.json`: actual image IDs and enforced container resource limits.
+- `phase.json`: full-load warm-up boundary, measured window, and warm-up failures.
+- `token_*.csv`, `token.html`: Locust statistics for the measured window.
+- `including_warmup_stats_history.csv`: separate full history for diagnosis.
+- `resources.jsonl`: timestamped container CPU/RAM/I/O and load-generator CPU samples.
+- `trials.json`, `summary.json`: all trials, median/min/max/stdev RPS, median trial
+  p95, failures, and quality flags. `rps_*` includes failed requests; use
+  `successful_rps_*` for successful token issuance. `trials_with_no_success`
+  explicitly counts zero-goodput trials; these remain results, not harness crashes.
+  Latency percentiles include failed requests and are not pooled across requests.
+
+Quality flags identify shared CPU saturation, memory pressure, a busy load generator,
+and missing samples. They are heuristics, not proof that unflagged runs are free of
+bottlenecks. Failure counts remain visible; summaries never choose the fastest run.
+Tokens, credentials, private keys, and raw environment settings are not saved in
+run artifacts. Native HMAC token metadata is decoded for inspection without
+exporting the signing secret; it is not a signature-verification test.
+
+```sh
+make check
+uv run ruff check fastid_benchmark tests
+```
+
+The older `analyzer/` reads historical `results/cpu_*` only. Use the new session's
+summary for repeated trials; the legacy plots do not aggregate these new runs.

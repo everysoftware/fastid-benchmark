@@ -1,0 +1,26 @@
+{
+  "description": "Minimal M2M with client_secret_post, 300-second access tokens and empty scopes. Native signing algorithms are preserved. Native claim and extra-token work is explicitly listed below; it remains part of measured cost. Optional hs256 and rs256 profiles only check signing comparability.",
+  "claim_exceptions": {
+    "fastid": {
+      "typ": "Native access-token type marker."
+    },
+    "keycloak": {
+      "jti": "Native unique token identifier.",
+      "azp": "Native authorized-party client identifier.",
+      "typ": "Native bearer-token type marker."
+    },
+    "authentik": {
+      "acr": "Native authentication context marker.",
+      "aud": "Native audience/client identifier.",
+      "auth_time": "Native service-account authentication time.",
+      "azp": "Native authorized-party client identifier.",
+      "jti": "Native unique token identifier.",
+      "uid": "Native service-account identifier."
+    }
+  },
+  "extra_token_exceptions": {
+    "authentik": {
+      "id_token": "Pinned Authentik returns an ID token even for empty-scope client_credentials. This is additional native issuance work, retained in timings and response size; these are not equivalent single-token operations."
+    }
+  }
+}
