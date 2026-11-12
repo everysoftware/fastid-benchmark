@@ -116,6 +116,20 @@ plateaus before claiming maximum capacity. A saturated load generator or shared
 dependency invalidates a capacity claim. Run on an otherwise idle host with enough
 CPU and RAM for the IAM stack, dependencies, and the load generator.
 
+The runner starts Locust with local worker processes. By default, each trial uses the
+same number of Locust workers as its IAM CPU budget (`--cpus 1 2 4` uses 1, 2, then
+4 workers); override this with `--locust-processes N` to hold the count fixed.
+Resource samples record total Locust CPU and the busiest individual process so
+generator saturation remains visible.
+
+For benchmark runs, FastID defaults to two Gunicorn workers per allocated CPU
+while preserving its CPU quota (`CPU=4` starts 8 workers). In a CPU=4 saturation
+control, this reduced `ReadTimeout` failures from 1,170 to 1 with no load-generator
+saturation flag. The Locust request deadline defaults to 15 seconds; a
+`ReadTimeout` means a response exceeded that deadline, not that FastID returned
+an application error. Set `FASTID_GUNICORN_WORKERS` or `--request-timeout` to
+override these settings for a separate tuning run.
+
 `SIGNING_PROFILE=hs256` is the default and requires HS256 from all systems.
 `SIGNING_PROFILE=native` does not require matching algorithms; `SIGNING_PROFILE=rs256` requires RS256 and
 2048-bit public keys. These runner options **check** the deployed services; they never
@@ -215,7 +229,7 @@ not be combined with the new policy's results.
 - `phase.json`: full-load warm-up boundary, measured window, and warm-up failures.
 - `token_*.csv`, `token.html`: Locust statistics for the measured window.
 - `including_warmup_stats_history.csv`: separate full history for diagnosis.
-- `resources.jsonl`: timestamped container CPU/RAM/I/O and load-generator CPU samples.
+- `resources.jsonl`: timestamped container CPU/RAM/I/O and aggregate/per-process Locust CPU samples.
 - `trials.json`, `summary.json`: all trials, median/min/max/stdev RPS, median trial
   p95, failures, and quality flags. `rps_*` includes failed requests; use
   `successful_rps_*` for successful token issuance. `trials_with_no_success`

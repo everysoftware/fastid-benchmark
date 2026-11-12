@@ -1,9 +1,19 @@
 import json
 import subprocess
 import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 from fastid_benchmark.comparison import compare_observations, make_schedule, summarize, validate_observation
-from fastid_benchmark.run import compose, quality_flags, validate_config
+from fastid_benchmark.run import (
+    arguments,
+    compose,
+    locust_commands,
+    process_tree_cpu_usage,
+    quality_flags,
+    service_start_command,
+    validate_config,
+)
 
 
 def observation(**changes):
@@ -96,6 +106,22 @@ class ComparisonTests(unittest.TestCase):
 
 
 class ResolvedConfigTests(unittest.TestCase):
+    def test_fastid_worker_default_uses_two_workers_per_cpu_budget(self):
+        with patch.dict("os.environ", {}, clear=True):
+            _, env = compose(4, 0.75)
+
+        self.assertEqual(env["FASTID_GUNICORN_WORKERS"], "8")
+
+    def test_fastid_service_start_rebuilds_local_prod_image(self):
+        command = service_start_command(["docker", "compose"], "fastid")
+        self.assertIn("--build", command)
+        self.assertEqual(command[-1], "fastid-server")
+
+    def test_other_service_start_keeps_pinned_image_without_rebuild(self):
+        command = service_start_command(["docker", "compose"], "keycloak")
+        self.assertNotIn("--build", command)
+        self.assertEqual(command[-1], "keycloak-server")
+
     def test_all_profiles_have_equal_budgets_and_pinned_images(self):
         for cpu in [1, 2, 4, 8, 16]:
             for split in [0.5, 0.75, 0.9]:
@@ -109,6 +135,67 @@ class ResolvedConfigTests(unittest.TestCase):
 
 
 class ResourceQualityTests(unittest.TestCase):
+    def test_balanced_locust_workers_are_not_marked_saturated_by_aggregate_cpu(self):
+        deployment = {"containers": []}
+        samples = [{"timestamp": 12, "loadgen_cpu_percent": 280, "loadgen_cpu_max_process_percent": 74}]
+        self.assertNotIn("load_generator_cpu", quality_flags(samples, deployment, 10, 15))
+
+    def test_any_saturated_locust_worker_is_flagged(self):
+        deployment = {"containers": []}
+        samples = [{"timestamp": 12, "loadgen_cpu_percent": 280, "loadgen_cpu_max_process_percent": 95}]
+        self.assertIn("load_generator_cpu", quality_flags(samples, deployment, 10, 15))
+
+    def test_process_tree_cpu_usage_aggregates_parent_and_workers(self):
+        root = Mock()
+        root.children.return_value = [Mock(), Mock()]
+        root.cpu_percent.return_value = 2
+        root.children.return_value[0].cpu_percent.return_value = 42
+        root.children.return_value[1].cpu_percent.return_value = 37
+
+        usage = process_tree_cpu_usage([root])
+
+        self.assertEqual(usage, {"total_percent": 81, "max_process_percent": 42, "process_count": 3})
+
+    def test_locust_command_uses_local_worker_processes(self):
+        from types import SimpleNamespace
+
+        options = SimpleNamespace(
+            users=2000,
+            ramp=50,
+            locust_processes=4,
+            warmup=180,
+            duration=120,
+            request_timeout=10,
+        )
+        master, workers = locust_commands(
+            {"system": "fastid", "mode": "saturation"}, options, Path("/tmp/trial")
+        )
+
+        self.assertEqual(master[master.index("--expect-workers") + 1], "4")
+        self.assertEqual(master[master.index("-u") + 1], "2000")
+        self.assertIn("--csv-full-history", master)
+        self.assertEqual(len(workers), 4)
+        self.assertIn("--worker", workers[0])
+        self.assertNotIn("--csv-full-history", workers[0])
+
+    def test_locust_process_count_defaults_to_each_trials_cpu_budget(self):
+        with patch(
+            "sys.argv", ["runner", "--systems", "fastid", "--cpus", "1", "2", "4"]
+        ):
+            options = arguments()
+        self.assertIsNone(options.locust_processes)
+        self.assertEqual(options.request_timeout, 15)
+        options.locust_processes = None
+        master, workers = locust_commands({"system": "fastid", "mode": "saturation", "cpu": 2}, options, Path("/tmp/trial"))
+        self.assertEqual(master[master.index("--expect-workers") + 1], "2")
+        self.assertEqual(len(workers), 2)
+
+    def test_locust_process_count_can_be_overridden(self):
+        with patch(
+            "sys.argv", ["runner", "--systems", "fastid", "--cpus", "1", "2", "4", "--locust-processes", "6"]
+        ):
+            self.assertEqual(arguments().locust_processes, 6)
+
     def test_container_restart_or_oom_between_samples_is_flagged(self):
         before = {"containers": [{"name": "iam", "service": "fastid-server", "restart_count": 0, "image_id": "first"}]}
         after = {

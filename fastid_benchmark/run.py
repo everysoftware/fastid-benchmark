@@ -55,6 +55,7 @@ def compose(cpu, split, database_mode="direct"):
         AUTHENTIK_SERVER_CPU_LIMIT=format(cpu * split, ".8f"),
         AUTHENTIK_WORKER_CPU_LIMIT=format(cpu * (1 - split), ".8f"),
     )
+    env.setdefault("FASTID_GUNICORN_WORKERS", str(cpu * 2))
     args = ["docker", "compose", "-f", "docker-compose.yml"]
     if database_mode == "session":
         args += ["-f", "docker-compose.session.yml", "--profile", "session"]
@@ -63,6 +64,14 @@ def compose(cpu, split, database_mode="direct"):
         raise ValueError(msg)
     args += ["--env-file", ".env", "--env-file", f"cpu_env/.env.cpu{cpu}"]
     return args, env
+
+
+def service_start_command(args, system):
+    command = [*args, "up", "-d", "--wait", "--wait-timeout", "240"]
+    if system == "fastid":
+        command.append("--build")
+    command.append(f"{system}-server")
+    return command
 
 
 def database_routes(config):
@@ -169,9 +178,30 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
-def resources(args, env, directory, stop, process_id):
-    loadgen = psutil.Process(process_id)
-    loadgen.cpu_percent()
+def process_tree_cpu_usage(roots):
+    processes = {}
+    for root in roots:
+        processes[root.pid] = root
+        try:
+            processes.update({child.pid: child for child in root.children(recursive=True)})
+        except psutil.Error:
+            continue
+    percentages = []
+    for item in processes.values():
+        try:
+            percentages.append(item.cpu_percent())
+        except psutil.Error:
+            continue
+    return {
+        "total_percent": sum(percentages),
+        "max_process_percent": max(percentages, default=0),
+        "process_count": len(percentages),
+    }
+
+
+def resources(args, env, directory, stop, process_ids):
+    loadgen = [psutil.Process(process_id) for process_id in process_ids]
+    process_tree_cpu_usage(loadgen)  # Prime psutil's interval counters before collecting samples.
     with (directory / "resources.jsonl").open("w") as output:
         while not stop.is_set():
             try:
@@ -183,13 +213,16 @@ def resources(args, env, directory, stop, process_id):
                     if ids
                     else ""
                 )
+                loadgen_cpu = process_tree_cpu_usage(loadgen)
                 output.write(
                     json.dumps(
                         {
                             "timestamp": time.time(),
                             "containers": [json.loads(line) for line in raw.splitlines()],
                             "host_load": os.getloadavg(),
-                            "loadgen_cpu_percent": loadgen.cpu_percent(),
+                            "loadgen_cpu_percent": loadgen_cpu["total_percent"],
+                            "loadgen_cpu_max_process_percent": loadgen_cpu["max_process_percent"],
+                            "loadgen_process_count": loadgen_cpu["process_count"],
                         }
                     )
                     + "\n"
@@ -278,7 +311,8 @@ def quality_flags(samples, deployment, start, end, after=None):  # noqa: PLR0912
     for sample in measured:
         if sample.get("error"):
             flags.add("resource_sampling_error")
-        if sample.get("loadgen_cpu_percent", 0) >= SATURATION_PERCENT:
+        loadgen_cpu = sample.get("loadgen_cpu_max_process_percent", sample.get("loadgen_cpu_percent", 0))
+        if loadgen_cpu >= SATURATION_PERCENT:
             flags.add("load_generator_cpu")
         for container in sample.get("containers", []):
             limit = limits.get(container["Name"])
@@ -294,65 +328,120 @@ def quality_flags(samples, deployment, start, end, after=None):  # noqa: PLR0912
     return sorted(flags)
 
 
+def locust_commands(trial, options, directory):
+    prefix = directory / "token"
+    worker_count = options.locust_processes or trial["cpu"]
+    common = [
+        sys.executable,
+        "-m",
+        "locust",
+        "-f",
+        "fastid_benchmark/test_token.py",
+        "--host",
+        trial["system"],
+        "--workload-mode",
+        trial["mode"],
+        "--warmup-seconds",
+        str(options.warmup),
+        "--measurement-seconds",
+        str(options.duration),
+        "--request-timeout",
+        str(options.request_timeout),
+        "--phase-file",
+        str(directory / "phase.json"),
+    ]
+    master = [
+        *common,
+        "--headless",
+        "--master",
+        "--expect-workers",
+        str(worker_count),
+        "-u",
+        str(options.users),
+        "-r",
+        str(options.ramp),
+        "--csv",
+        str(prefix),
+        "--csv-full-history",
+        "--html",
+        str(prefix) + ".html",
+        "--exit-code-on-error",
+        "0",
+    ]
+    worker = [
+        sys.executable,
+        "-m",
+        "locust",
+        "-f",
+        "fastid_benchmark/test_token.py",
+        "--worker",
+        "--master-host",
+        "127.0.0.1",
+        "--host",
+        trial["system"],
+        "--workload-mode",
+        trial["mode"],
+        "--request-timeout",
+        str(options.request_timeout),
+    ]
+    return master, [worker.copy() for _ in range(worker_count)]
+
+
 def measurement(args, env, trial, options, directory):
     prefix = directory / "token"
     phase_file = directory / "phase.json"
     stop = threading.Event()
     sampler = None
     try:
-        locust = [
-            sys.executable,
-            "-m",
-            "locust",
-            "-f",
-            "fastid_benchmark/test_token.py",
-            "--headless",
-            "--host",
-            trial["system"],
-            "-u",
-            str(options.users),
-            "-r",
-            str(options.ramp),
-            "--workload-mode",
-            trial["mode"],
-            "--warmup-seconds",
-            str(options.warmup),
-            "--measurement-seconds",
-            str(options.duration),
-            "--request-timeout",
-            str(options.request_timeout),
-            "--phase-file",
-            str(phase_file),
-            "--csv",
-            str(prefix),
-            "--csv-full-history",
-            "--html",
-            str(prefix) + ".html",
-            "--exit-code-on-error",
-            "0",
-        ]
+        master_command, worker_commands = locust_commands(trial, options, directory)
         # Request failures are retained as data; process/runner errors still fail the run.
         with (directory / "locust.log").open("w") as log:
-            process = subprocess.Popen(  # noqa: S603 -- Fixed Python module with validated CLI arguments.
-                locust,
+            master = subprocess.Popen(  # noqa: S603 -- Fixed Python module with validated CLI arguments.
+                master_command,
                 cwd=ROOT,
                 env=env,
                 stdout=log,
                 stderr=subprocess.STDOUT,
             )
-            sampler = threading.Thread(target=resources, args=(args, env, directory, stop, process.pid), daemon=True)
+            workers = []
+            try:
+                for worker_command in worker_commands:
+                    workers.append(
+                        subprocess.Popen(  # noqa: S603 -- Fixed Python module with validated CLI arguments.
+                            worker_command,
+                            cwd=ROOT,
+                            env=env,
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                        )
+                    )
+            except BaseException:
+                master.terminate()
+                for worker in workers:
+                    worker.terminate()
+                raise
+            process_ids = [master.pid, *(worker.pid for worker in workers)]
+            sampler = threading.Thread(
+                target=resources, args=(args, env, directory, stop, process_ids), daemon=True
+            )
             sampler.start()
             try:
-                exit_code = process.wait(timeout=options.users / options.ramp + options.warmup + options.duration + 60)
+                exit_code = master.wait(
+                    timeout=options.users / options.ramp + options.warmup + options.duration + 60
+                )
+                worker_exit_codes = [worker.wait(timeout=15) for worker in workers]
             except BaseException:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+                for process in [master, *workers]:
+                    if process.poll() is None:
+                        process.terminate()
+                for process in [master, *workers]:
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
                 raise
-        if exit_code or not phase_file.exists():
+        if exit_code or any(worker_exit_codes) or not phase_file.exists():
             msg = "Locust failed; inspect locust.log"
             raise RuntimeError(msg)
         phase = json.loads(phase_file.read_text())
@@ -386,6 +475,9 @@ def measurement(args, env, trial, options, directory):
         stop.set()
         if sampler:
             sampler.join(timeout=25)
+        for process in [master, *workers] if "master" in locals() else []:
+            if process.poll() is None:
+                process.terminate()
 
 
 def arguments():
@@ -396,9 +488,14 @@ def arguments():
     parser.add_argument("--mode", choices=["paced", "saturation", "both"], default="both")
     parser.add_argument("--signing-profile", choices=["native", "hs256", "rs256"], default="hs256")
     parser.add_argument("--users", type=int, default=100)
+    parser.add_argument(
+        "--locust-processes",
+        type=int,
+        help="Local Locust worker processes per trial; defaults to that trial's IAM CPU budget",
+    )
     parser.add_argument("--ramp", type=float, default=10)
     parser.add_argument("--warmup", type=float, default=60)
-    parser.add_argument("--request-timeout", type=float, default=10)
+    parser.add_argument("--request-timeout", type=float, default=15)
     parser.add_argument("--duration", type=float, default=120)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--seed", type=int, default=20261111)
@@ -422,6 +519,8 @@ def arguments():
         for value in [options.ramp, options.warmup, options.duration, options.request_timeout, *options.splits]
     ):
         parser.error("All numeric options must be finite")
+    if options.locust_processes is not None and options.locust_processes <= 0:
+        parser.error("Locust process count must be positive")
     if any(not 0 < split < 1 for split in options.splits):
         parser.error("Authentik server fractions must be strictly between zero and one")
     for field in ["systems", "cpus", "splits"]:
@@ -503,10 +602,7 @@ def main():  # noqa: PLR0912, PLR0915 -- Sequential setup, preflight, trials, an
                         )
                         validate_config(config, cpu, options.database_mode)
                         command([*current_args, "stop", *IAM_SERVICES, *BOUNCERS, "redis", "mailpit"], env=current_env)
-                        command(
-                            [*current_args, "up", "-d", "--wait", "--wait-timeout", "240", f"{name}-server"],
-                            env=current_env,
-                        )
+                        command(service_start_command(current_args, name), env=current_env)
                         deployment = metadata(current_args, current_env, config)
                         validate_runtime_database_mode(deployment, name, options.database_mode)
                         write_json(session / f"preflight_deployment_{name}_cpu{cpu}_split{split}.json", deployment)
@@ -537,10 +633,7 @@ def main():  # noqa: PLR0912, PLR0915 -- Sequential setup, preflight, trials, an
                 )
                 validate_config(config, trial["cpu"], options.database_mode)
                 command([*current_args, "stop", *IAM_SERVICES, *BOUNCERS, "redis", "mailpit"], env=current_env)
-                command(
-                    [*current_args, "up", "-d", "--wait", "--wait-timeout", "240", f"{trial['system']}-server"],
-                    env=current_env,
-                )
+                command(service_start_command(current_args, trial["system"]), env=current_env)
                 directory = (
                     session
                     / f"{index:03d}_{trial['system']}_db{trial['database_mode']}_cpu{trial['cpu']}_{trial['mode']}_split{trial['split']}_r{trial['repeat']}"
@@ -570,6 +663,7 @@ def main():  # noqa: PLR0912, PLR0915 -- Sequential setup, preflight, trials, an
                 write_json(directory / "token.json", observed)
                 print(f"Trial {index}/{len(schedule)}: {trial}", flush=True)
                 row = measurement(current_args, current_env, trial, options, directory)
+                row["locust_processes"] = options.locust_processes or trial["cpu"]
                 phase = json.loads((directory / "phase.json").read_text())
                 samples = [json.loads(line) for line in (directory / "resources.jsonl").read_text().splitlines()]
                 after = metadata(current_args, current_env, config)

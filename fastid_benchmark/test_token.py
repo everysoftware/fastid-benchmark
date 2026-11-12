@@ -4,7 +4,9 @@ from http import HTTPStatus
 from pathlib import Path
 
 import gevent
+from gevent.event import Event
 from locust import HttpUser, between, constant, events, task
+from locust.runners import MasterRunner, WorkerRunner
 
 from fastid_benchmark.config import get_provider
 
@@ -14,7 +16,7 @@ def arguments(parser):
     parser.add_argument("--workload-mode", choices=["paced", "saturation"], default="paced")
     parser.add_argument("--warmup-seconds", type=float, default=60)
     parser.add_argument("--measurement-seconds", type=float, default=120)
-    parser.add_argument("--request-timeout", type=float, default=10)
+    parser.add_argument("--request-timeout", type=float, default=15)
     parser.add_argument("--phase-file", default="")
 
 
@@ -22,6 +24,26 @@ def arguments(parser):
 def initialize(environment, **_kwargs):
     options = environment.parsed_options
     TokenUser.wait_time = between(0.5, 2) if options.workload_mode == "paced" else constant(0)
+    runner = environment.runner
+
+    if isinstance(runner, WorkerRunner):
+        def reset_worker_stats(environment, msg, **_kwargs):
+            environment.stats.reset_all()
+            runner.send_message("benchmark_stats_reset_ack")
+
+        runner.register_message("benchmark_reset_stats", reset_worker_stats)
+        return
+
+    pending_reset_acks = set()
+    reset_acks_received = Event()
+    if isinstance(runner, MasterRunner):
+        def receive_reset_ack(environment, msg, **_kwargs):
+            pending_reset_acks.discard(msg.node_id)
+            if not pending_reset_acks:
+                reset_acks_received.set()
+
+        runner.register_message("benchmark_stats_reset_ack", receive_reset_ack)
+
     state = {"started": False}
 
     def spawned(user_count, **_kwargs):
@@ -32,14 +54,21 @@ def initialize(environment, **_kwargs):
         def measure():
             gevent.sleep(options.warmup_seconds)
             phase = {
-                "measurement_start": time.time(),
                 "warmup_failures": environment.stats.total.num_failures,
                 "warmup_requests": environment.stats.total.num_requests,
                 "warmup_successes": environment.stats.total.num_requests - environment.stats.total.num_failures,
                 "users": user_count,
                 "mode": options.workload_mode,
             }
+            if isinstance(runner, MasterRunner):
+                pending_reset_acks.update(worker.id for worker in runner.clients.values())
+                reset_acks_received.clear()
+                if pending_reset_acks:
+                    runner.send_message("benchmark_reset_stats")
+                    if not reset_acks_received.wait(timeout=15):
+                        raise RuntimeError("Locust workers did not acknowledge the measurement stats reset")
             environment.stats.reset_all()
+            phase["measurement_start"] = time.time()
             if options.phase_file:
                 Path(options.phase_file).write_text(json.dumps(phase))
             gevent.sleep(options.measurement_seconds)
