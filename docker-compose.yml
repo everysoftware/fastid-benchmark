@@ -76,11 +76,13 @@ services:
       retries: 5
       start_period: 10s
 
-  # BOUNCERS
     cpus: 0.25
     mem_limit: 128m
 
+  # Optional session poolers
+
   fastid-pgbouncer:
+    profiles: [session]
     env_file:
       - .env
     image: ${PGBOUNCER_IMAGE:-edoburu/pgbouncer@sha256:8638aa563607256d3c7440437534195f1066a92b68015d89ae9d6b935b444a6d}
@@ -88,7 +90,7 @@ services:
       DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASS}@postgresql:5432/${PG_FASTID_DB:-fastid}
       ADMIN_USERS: ${PG_USER:-postgres}
       AUTH_TYPE: scram-sha-256
-      POOL_MODE: transaction
+      POOL_MODE: session
       MAX_CLIENT_CONN: 2000
       DEFAULT_POOL_SIZE: 100
       RESERVE_POOL_SIZE: 10
@@ -109,6 +111,7 @@ services:
     mem_limit: 256m
 
   keycloak-pgbouncer:
+    profiles: [session]
     env_file:
       - .env
     image: ${PGBOUNCER_IMAGE:-edoburu/pgbouncer@sha256:8638aa563607256d3c7440437534195f1066a92b68015d89ae9d6b935b444a6d}
@@ -116,7 +119,7 @@ services:
       DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASS}@postgresql:5432/${PG_KEYCLOAK_DB:-keycloak}
       ADMIN_USERS: ${PG_USER:-postgres}
       AUTH_TYPE: scram-sha-256
-      POOL_MODE: transaction
+      POOL_MODE: session
       MAX_CLIENT_CONN: 2000
       DEFAULT_POOL_SIZE: 100
       RESERVE_POOL_SIZE: 10
@@ -137,6 +140,7 @@ services:
     mem_limit: 256m
 
   authentik-pgbouncer:
+    profiles: [session]
     env_file:
       - .env
     image: ${PGBOUNCER_IMAGE:-edoburu/pgbouncer@sha256:8638aa563607256d3c7440437534195f1066a92b68015d89ae9d6b935b444a6d}
@@ -144,7 +148,7 @@ services:
       DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASS}@postgresql:5432/${PG_AUTHENTIK_DB:-authentik}
       ADMIN_USERS: ${PG_USER:-postgres}
       AUTH_TYPE: scram-sha-256
-      POOL_MODE: transaction
+      POOL_MODE: session
       MAX_CLIENT_CONN: 2000
       DEFAULT_POOL_SIZE: 100
       RESERVE_POOL_SIZE: 10
@@ -162,21 +166,22 @@ services:
       timeout: 5s
       retries: 5
 
-  # AUTHENTIK
     cpus: 0.5
     mem_limit: 256m
+
+  # AUTHENTIK
 
   authentik-server:
     command: server
     depends_on:
-      authentik-pgbouncer:
+      postgresql:
         condition: service_healthy
       authentik-worker:
         condition: service_started
     env_file:
       - .env
     environment:
-      AUTHENTIK_POSTGRESQL__HOST: ${PG_AUTHENTIK_HOST:-authentik-pgbouncer}
+      AUTHENTIK_POSTGRESQL__HOST: ${PG_AUTHENTIK_HOST:-postgresql}
       AUTHENTIK_POSTGRESQL__NAME: ${PG_AUTHENTIK_DB:-authentik}
       AUTHENTIK_POSTGRESQL__PASSWORD: ${PG_PASS}
       AUTHENTIK_POSTGRESQL__USER: ${PG_USER:-postgres}
@@ -201,12 +206,12 @@ services:
   authentik-worker:
     command: worker
     depends_on:
-      authentik-pgbouncer:
+      postgresql:
         condition: service_healthy
     env_file:
       - .env
     environment:
-      AUTHENTIK_POSTGRESQL__HOST: ${PG_AUTHENTIK_HOST:-authentik-pgbouncer}
+      AUTHENTIK_POSTGRESQL__HOST: ${PG_AUTHENTIK_HOST:-postgresql}
       AUTHENTIK_POSTGRESQL__NAME: ${PG_AUTHENTIK_DB:-authentik}
       AUTHENTIK_POSTGRESQL__PASSWORD: ${PG_PASS}
       AUTHENTIK_POSTGRESQL__USER: ${PG_USER:-postgres}
@@ -237,7 +242,7 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}
       KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://${PG_KEYCLOAK_HOST:-keycloak-pgbouncer}:5432/${PG_KEYCLOAK_DB:-keycloak}
+      KC_DB_URL: jdbc:postgresql://${PG_KEYCLOAK_HOST:-postgresql}:5432/${PG_KEYCLOAK_DB:-keycloak}
       KC_DB_USERNAME: ${PG_USER:-postgres}
       KC_DB_PASSWORD: ${PG_PASS:?database password required}
       KC_DB_POOL_MAX_SIZE: ${KC_DB_POOL_MAX_SIZE:-100}
@@ -246,7 +251,7 @@ services:
       - "8087:8080"
       - "10000:10000"
     depends_on:
-      keycloak-pgbouncer:
+      postgresql:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'HEAD /health/ready HTTP/1.0\r\n\r\n' >&3; read -r status <&3; [[ \"$$status\" == *' 200 '* ]]"]
@@ -264,11 +269,14 @@ services:
   fastid-server:
     env_file:
       - .env
-    image: ${FASTID_IMAGE:-everysoftware/fastid:prod@sha256:6219f1aa7263fb82a1e99c7bdc3d5cc680bf06bcb8a25f813b8f443e08e227f9}
+    image: ${FASTID_IMAGE:-fastid:prod}
+    build:
+      context: ../fastid
+      dockerfile: docker/Dockerfile
     ports:
       - "8012:8000"
     depends_on:
-      fastid-pgbouncer:
+      postgresql:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -276,7 +284,7 @@ services:
         condition: service_healthy
 
     environment:
-      FASTID_DB_URL: ${FASTID_DB_URL:-postgresql+asyncpg://${PG_USER:-fastid}:${PG_PASS:?database password required}@${PG_FASTID_HOST:-fastid-pgbouncer}:5432/${PG_FASTID_DB:-fastid}}
+      FASTID_DB_URL: ${FASTID_DB_URL:-postgresql+asyncpg://${PG_USER:-postgres}:${PG_PASS:?database password required}@${PG_FASTID_HOST:-postgresql}:5432/${PG_FASTID_DB:-fastid}}
       FASTID_REDIS_URL: ${FASTID_REDIS_URL:-redis://:${REDIS_PASSWORD:?redis password required}@redis:6379/0}
       FASTID_SMTP_ENABLED: ${FASTID_SMTP_ENABLED:-true}
       FASTID_SMTP_HOST: ${FASTID_SMTP_HOST:-mailpit}
@@ -288,6 +296,7 @@ services:
       FASTID_DB_POOL_SIZE: ${FASTID_DB_POOL_SIZE:-100}
       FASTID_REDIS_POOL_SIZE: ${FASTID_REDIS_POOL_SIZE:-50}
       FASTID_GUNICORN_WORKERS: ${FASTID_GUNICORN_WORKERS:-}
+      FASTID_GUNICORN_ACCESS_LOG: ${FASTID_GUNICORN_ACCESS_LOG:-false}
 
     volumes:
       - "./certs:/opt/fastid/certs"

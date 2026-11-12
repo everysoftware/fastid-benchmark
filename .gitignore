@@ -170,3 +170,4 @@ certs/
 results/runs/
 
 .env.before-fairness
+docs

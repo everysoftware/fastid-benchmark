@@ -112,10 +112,13 @@ def trial_metrics(total, trial):
 def summarize(rows):
     groups = {}
     for row in rows:
-        key = tuple(row[k] for k in ("system", "cpu", "mode", "split"))
+        key = (
+            *tuple(row[k] for k in ("system", "cpu", "mode", "split")),
+            row.get("database_mode", "legacy_unspecified"),
+        )
         groups.setdefault(key, []).append(row)
     result = []
-    for (system, cpu, mode, split), group in sorted(groups.items()):
+    for (system, cpu, mode, split, database_mode), group in sorted(groups.items()):
         rps = [r["rps"] for r in group]
         failures = sum(r["failures"] for r in group)
         successful_rps = [
@@ -124,6 +127,7 @@ def summarize(rows):
         result.append(
             {
                 "system": system,
+                "database_mode": database_mode,
                 "cpu": cpu,
                 "mode": mode,
                 "split": split,
@@ -194,6 +198,10 @@ def observe_token(settings, profile="native", allowed_extra_tokens=()):
             msg = "Token issuer disagrees with the configured issuer"
             raise ValueError(msg)
         observed = {
+            "client_authentication": {
+                "service_account": "client_secret_post:service_account_app_password",
+                "provider_secret": "client_secret_post:provider_secret_auto_account",
+            }.get(getattr(settings, "auth_method", None), "client_secret_post"),
             "algorithm": header.get("alg"),
             "key_bits": key_bits,
             "lifetime": expires - issued,

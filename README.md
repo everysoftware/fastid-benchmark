@@ -3,9 +3,10 @@
 Docker Compose and Locust benchmarks for FastID, Keycloak, and Authentik using
 OAuth 2.0 `client_credentials` and form-based client ID/secret authentication.
 
-The default comparison preserves each product's signing algorithm. It measures
-native implementations under equal IAM resource ceilings; it does **not** imply
-identical cryptographic work. Token algorithms, claim names, extra tokens, and
+The default comparison checks HS256 access tokens under equal IAM resource
+ceilings. Provisioning explicitly selects HS256 for the dedicated Keycloak client;
+FastID and Authentik keep their existing HS256 settings. This does **not** imply
+identical token-issuance work. Token algorithms, claim names, extra tokens, and
 response sizes are recorded. Known native differences are explained in
 [`token-policy.json`](token-policy.json); unexplained differences stop the run.
 
@@ -54,10 +55,31 @@ make preflight CPU=1
 
 Provisioning creates a minimal Keycloak service-account client and an Authentik
 provider/application named `benchmark`, with no optional profile/email mappings
-and a 300-second access-token lifetime (one second rounding is allowed in observations). It preserves existing signing settings.
+and a 300-second access-token lifetime (one second rounding is allowed in observations).
+Keycloak's dedicated client defaults to `BENCHMARK_KEYCLOAK_ACCESS_TOKEN_ALGORITHM=HS256`;
+`native` preserves its existing setting, and `RS256` explicitly selects RSA.
+Authentik provisioning preserves its provider signing setting. Keycloak also gets
+a minimal client-audience mapper so its access tokens can pass introspection;
+this additional native claim is recorded in the token policy.
 For FastID, existing working client credentials are reused; to create a missing
 client, provide `BENCHMARK_FASTID_ADMIN_TOKEN`. Compose sets FastID's token lifetime
 to 300 seconds and production mode explicitly, without changing its algorithm.
+
+Authentik uses a pre-created `benchmark-m2m` service account and an app password.
+`make provision NAME=authentik` creates or reuses the account/password and stores
+`BENCHMARK_AUTHENTIK_APP_PASSWORD` only in the ignored local `.env`. Each request
+still uses `client_credentials` and `client_id`, with `client_secret` containing
+Base64 of `username:app_password`. The OAuth provider secret remains separate and
+is not replaced by this encoded credential. Re-provisioning reuses the existing
+password; it does not rotate it or create another account. This is the documented
+[static M2M method](https://version-2026-2.goauthentik.io/add-secure-apps/providers/oauth2/machine_to_machine/).
+
+`BENCHMARK_AUTHENTIK_AUTH_METHOD=service_account` is the default. To reproduce the
+older provider-secret/automatic-account path, explicitly select `provider_secret`.
+Keep those results in separate sessions: it is a different authentication path
+with different database contention. Do not mix its results with static-account
+results. The selected path is recorded as `client_authentication` in token metadata.
+Missing app credentials stop the run instead of falling back to provider-secret auth.
 
 The pinned Authentik version returns an additional ID token even for empty scopes.
 Its native claim and response costs remain in measurements and are documented in
@@ -94,10 +116,10 @@ plateaus before claiming maximum capacity. A saturated load generator or shared
 dependency invalidates a capacity claim. Run on an otherwise idle host with enough
 CPU and RAM for the IAM stack, dependencies, and the load generator.
 
-`SIGNING_PROFILE=native` is the default and does not require matching algorithms.
-`SIGNING_PROFILE=hs256` requires HS256; `SIGNING_PROFILE=rs256` requires RS256 and
-2048-bit public keys. These options **check** the deployed services; they never
-reconfigure them. For the RSA profile, set each provider's `JWKS_URL` first.
+`SIGNING_PROFILE=hs256` is the default and requires HS256 from all systems.
+`SIGNING_PROFILE=native` does not require matching algorithms; `SIGNING_PROFILE=rs256` requires RS256 and
+2048-bit public keys. These runner options **check** the deployed services; they never
+reconfigure them. Keycloak signing is set separately during provisioning. For the RSA profile, set each provider's `JWKS_URL` first.
 Equal algorithms alone do not remove documented claim and extra-token costs.
 
 Single-system targets use the same runner, with one trial and paced load:
@@ -133,7 +155,39 @@ Authentik's split is fixed; idle worker CPU cannot be borrowed by the server.
 Sensitivity trials change the CPU split while retaining the same combined budget
 and the same 3/1 GiB memory split.
 
-Shared infrastructure is outside the IAM budget, with fixed limits across trials:
+Shared infrastructure is outside the IAM budget, with fixed limits across trials.
+The default `DATABASE_MODE=direct` routes **all three** IAM systems to the same
+PostgreSQL service, without PgBouncer. Poolers are not started in this scenario.
+
+The separate `DATABASE_MODE=session` scenario routes **all three** systems through
+their respective PgBouncers using the same `session` mode, 100 default backend
+connections, 10 reserve connections, 2000 client connections, and equal CPU/RAM
+limits. PostgreSQL and IAM budgets remain unchanged. Select it with:
+
+```sh
+make compare CPU=1 DATABASE_MODE=session
+make preflight CPU=1 DATABASE_MODE=session
+```
+
+The equivalent Compose configuration is `docker compose -f docker-compose.yml
+-f docker-compose.session.yml --profile session`. Never add a pooler to only one
+system's baseline. Route/dependency checks reject mixed configurations, and each
+measured trial checks that only its scenario's pooler is running.
+
+`database_mode` is recorded in the session, trial names and summaries. Summary
+aggregation separates the two modes; older records without this field are labeled
+`legacy_unspecified`, never assumed to be direct. Historical mixed-topology
+results must not be pooled with either uniform scenario.
+
+Application connection settings remain explicit: FastID's `FASTID_DB_POOL_SIZE`
+is per worker (default 100), Keycloak's `KC_DB_POOL_MAX_SIZE` is per instance
+(default 100), and pinned Authentik uses its native Django connections with
+`CONN_MAX_AGE=0` and no supported built-in pool. These are documented native
+settings, not a claim of identical total connection counts. Connection exhaustion
+and failed requests remain visible outcomes. Database routes and safe connection
+settings are saved in deployment metadata.
+
+Resource limits:
 
 | Dependency | CPUs | RAM |
 |------------|-----:|-----|
@@ -182,3 +236,26 @@ uv run ruff check fastid_benchmark tests
 
 The older `analyzer/` reads historical `results/cpu_*` only. Use the new session's
 summary for repeated trials; the legacy plots do not aggregate these new runs.
+
+## FastID benchmark image
+
+The default benchmark image is built from the sibling `../fastid` checkout and
+tagged locally as `fastid:prod`. It layers the current FastID source over the
+pinned production dependencies, so benchmark runs use the checked-out fixes by
+default. Rebuild it after changing FastID source:
+
+```sh
+docker compose -f docker-compose.yml --env-file .env build fastid-server
+```
+
+Use a short FastID-only regression run after local fixes. Keep 100 users so the
+50-connection Redis pool is actually exercised; 75 measured seconds also cross
+the client's 60-second cache TTL. This is a functional load check, not a capacity
+comparison. The standard `compare` matrix is reserved for explicit full comparisons.
+
+```sh
+make test-token NAME=fastid CPU=1 MODE=saturation USERS=100 RAMP=20 DURATION=75 WARMUP=15
+```
+
+Keep different image versions and workload lengths in separate sessions. See
+[changes and validation](docs/superpowers/reviews/fastid-db-fixes.md).

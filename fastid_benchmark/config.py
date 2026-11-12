@@ -1,4 +1,6 @@
+from base64 import b64encode
 from functools import lru_cache
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import SecretStr, model_validator
@@ -54,11 +56,25 @@ class FastIDSettings(ProviderSettings):
 
 
 class KeycloakSettings(ProviderSettings):
+    access_token_algorithm: Literal["native", "HS256", "RS256"] = "HS256"  # noqa: S105 -- Algorithm identifier, not a secret.
     model_config = SettingsConfigDict(env_prefix="benchmark_keycloak_")
 
 
 class AuthentikSettings(ProviderSettings):
     model_config = SettingsConfigDict(env_prefix="benchmark_authentik_")
+    auth_method: Literal["service_account", "provider_secret"] = "service_account"
+    service_account_username: str = "benchmark-m2m"
+    app_password: SecretStr | None = None
+
+    def request_data(self):
+        data = super().request_data()
+        if self.auth_method == "service_account":
+            if not self.app_password or not self.service_account_username or ":" in self.service_account_username:
+                msg = "Authentik service account credentials missing or invalid; run make provision NAME=authentik"
+                raise ValueError(msg)
+            credentials = self.service_account_username + ":" + self.app_password.get_secret_value()
+            data["client_secret"] = b64encode(credentials.encode()).decode()
+        return data
 
 
 @lru_cache

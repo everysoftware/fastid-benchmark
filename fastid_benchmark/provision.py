@@ -1,4 +1,4 @@
-"""Provision dedicated benchmark clients; never changes a provider's signing algorithm."""
+"""Provision dedicated benchmark clients; supports static Authentik M2M credentials and explicit Keycloak access-token signing."""
 
 import argparse
 import os
@@ -7,13 +7,16 @@ from http import HTTPStatus
 from urllib.parse import urlsplit
 
 import requests
-from dotenv import dotenv_values
+from dotenv import dotenv_values, set_key
 from pydantic import ValidationError
 
 from fastid_benchmark.config import SYSTEMS, get_provider
 
 
-def keycloak_payload(realm, client_id, secret):
+def keycloak_payload(realm, client_id, secret, algorithm="native"):
+    attributes = {"access.token.lifespan": "300"}
+    if algorithm != "native":
+        attributes["access.token.signed.response.alg"] = algorithm
     return {
         "realm": realm,
         "enabled": True,
@@ -33,9 +36,18 @@ def keycloak_payload(realm, client_id, secret):
                 "defaultClientScopes": [],
                 "optionalClientScopes": [],
                 "protocolMappers": [],
-                "attributes": {"access.token.lifespan": "300"},
+                "attributes": attributes,
             }
         ],
+    }
+
+
+def keycloak_audience_mapper(client_id):
+    return {
+        "name": "benchmark-audience",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-audience-mapper",
+        "config": {"included.client.audience": client_id, "access.token.claim": "true", "id.token.claim": "false"},
     }
 
 
@@ -84,7 +96,9 @@ def keycloak(settings, values):
         },
     )
     session.headers["Authorization"] = "Bearer " + login.json()["access_token"]
-    payload = keycloak_payload(realm, settings.client_id, settings.client_secret.get_secret_value())
+    payload = keycloak_payload(
+        realm, settings.client_id, settings.client_secret.get_secret_value(), settings.access_token_algorithm
+    )
     endpoint = base + "/admin/realms/" + realm
     existing = session.get(endpoint, timeout=30)
     if existing.status_code == HTTPStatus.NOT_FOUND:
@@ -117,7 +131,71 @@ def keycloak(settings, values):
     mappers = checked(session, "GET", client_endpoint + "/protocol-mappers/models").json()
     for mapper in mappers:
         checked(session, "DELETE", client_endpoint + "/protocol-mappers/models/" + mapper["id"])
-    print("Keycloak: dedicated realm and minimal client provisioned; signing algorithm preserved")
+    checked(
+        session, "POST", client_endpoint + "/protocol-mappers/models", json=keycloak_audience_mapper(settings.client_id)
+    )
+    print(f"Keycloak: dedicated client provisioned; access-token signing setting: {settings.access_token_algorithm}")
+
+
+def validate_app_password_token(token, user_pk):
+    if token.get("user") != user_pk or token.get("intent") != "app_password":
+        msg = "Existing benchmark app password belongs to another identity or purpose"
+        raise ValueError(msg)
+    if token.get("expiring", True):
+        msg = "Benchmark app password must be non-expiring; review its expiry explicitly before reuse"
+        raise ValueError(msg)
+
+
+def authentik_service_account(session, base, settings):
+    if settings.auth_method == "provider_secret":
+        return
+    username = settings.service_account_username
+    if not username or ":" in username:
+        msg = "Authentik service account username is invalid"
+        raise ValueError(msg)
+    users = checked(session, "GET", base + "/core/users/", params={"username": username}).json()["results"]
+    if not users:
+        account = checked(
+            session,
+            "POST",
+            base + "/core/users/service_account/",
+            json={
+                "name": username,
+                "create_group": False,
+                "expiring": False,
+            },
+        ).json()
+        password = account["token"]
+    else:
+        if len(users) != 1 or users[0]["type"] != "service_account" or not users[0]["is_active"]:
+            msg = "Expected exactly one active benchmark service account"
+            raise ValueError(msg)
+        identifier = "service-account-" + username + "-password"
+        tokens = checked(session, "GET", base + "/core/tokens/", params={"identifier": identifier}).json()["results"]
+        if not tokens:
+            checked(
+                session,
+                "POST",
+                base + "/core/tokens/",
+                json={
+                    "identifier": identifier,
+                    "intent": "app_password",
+                    "user": users[0]["pk"],
+                    "expiring": False,
+                },
+            )
+        elif len(tokens) != 1:
+            msg = "Expected exactly one benchmark app password"
+            raise ValueError(msg)
+        else:
+            validate_app_password_token(tokens[0], users[0]["pk"])
+        password = checked(session, "GET", base + "/core/tokens/" + identifier + "/view_key/").json()["key"]
+    # Only the ignored local environment receives the credential, never stdout or run artifacts.
+    set_key(".env", "BENCHMARK_AUTHENTIK_APP_PASSWORD", password)
+    set_key(".env", "BENCHMARK_AUTHENTIK_SERVICE_ACCOUNT_USERNAME", username)
+    set_key(".env", "BENCHMARK_AUTHENTIK_AUTH_METHOD", "service_account")
+    get_provider.cache_clear()
+    print("Authentik: static service account and app password ready; stored in local .env")
 
 
 def authentik(settings, values):
@@ -174,6 +252,7 @@ def authentik(settings, values):
                 "policy_engine_mode": "any",
             },
         )
+    authentik_service_account(session, base, settings)
     print("Authentik: minimal confidential provider and application provisioned; signing algorithm preserved")
 
 

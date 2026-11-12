@@ -1,34 +1,36 @@
-restart:
-	docker compose restart
-	docker compose up -d --wait
+restart: stop
+	$(COMPOSE) up -d --wait
 
 stop:
-	docker compose stop
+	$(COMPOSE) stop
+	$(COMPOSE) stop fastid-pgbouncer keycloak-pgbouncer authentik-pgbouncer
 
 down:
-	docker compose down -v --remove-orphans
+	$(COMPOSE) down -v --remove-orphans
 
 # Single-system runs use the same isolation, preflight, and warm-up as the matrix.
+DATABASE_MODE ?= direct
+COMPOSE = docker compose -f docker-compose.yml $(if $(filter session,$(DATABASE_MODE)),-f docker-compose.session.yml --profile session) --env-file .env --env-file cpu_env/.env.cpu$(CPU)
 CPU ?= 1
 MODE ?= paced
 WARMUP ?= 60
 REPEATS ?= 3
 SEED ?= 20261111
-SIGNING_PROFILE ?= native
+SIGNING_PROFILE ?= hs256
 SPLITS ?= 0.75
 
 test-token:
-	uv run python -m fastid_benchmark.run --systems $(NAME) --cpus $(CPU) --mode $(MODE) --users $(USERS) --ramp $(RAMP) --duration $(DURATION) --warmup $(WARMUP) --repeats 1 --signing-profile $(SIGNING_PROFILE) --splits $(SPLITS)
+	uv run python -m fastid_benchmark.run --database-mode $(DATABASE_MODE) --systems $(NAME) --cpus $(CPU) --mode $(MODE) --users $(USERS) --ramp $(RAMP) --duration $(DURATION) --warmup $(WARMUP) --repeats 1 --signing-profile $(SIGNING_PROFILE) --splits $(SPLITS)
 
 compare:
-	uv run python -m fastid_benchmark.run --cpus $(CPU) --mode both --users 100 --ramp 10 --duration 120 --warmup $(WARMUP) --repeats $(REPEATS) --seed $(SEED) --signing-profile $(SIGNING_PROFILE) --splits $(SPLITS)
+	uv run python -m fastid_benchmark.run --database-mode $(DATABASE_MODE) --cpus $(CPU) --mode both --users 100 --ramp 10 --duration 120 --warmup $(WARMUP) --repeats $(REPEATS) --seed $(SEED) --signing-profile $(SIGNING_PROFILE) --splits $(SPLITS)
 
 provision:
-	docker compose --env-file .env --env-file cpu_env/.env.cpu$(CPU) up -d --wait --wait-timeout 240 $(NAME)-server
+	$(COMPOSE) up -d --wait --wait-timeout 240 $(NAME)-server
 	uv run python -m fastid_benchmark.provision $(NAME)
 
 preflight:
-	uv run python -m fastid_benchmark.run --cpus $(CPU) --preflight-only --signing-profile $(SIGNING_PROFILE) --splits $(SPLITS)
+	uv run python -m fastid_benchmark.run --database-mode $(DATABASE_MODE) --cpus $(CPU) --preflight-only --signing-profile $(SIGNING_PROFILE) --splits $(SPLITS)
 
 check:
 	uv run python -m unittest discover -s tests -v

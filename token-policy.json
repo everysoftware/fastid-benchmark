@@ -1,5 +1,5 @@
 {
-  "description": "Minimal M2M with client_secret_post, 300-second access tokens and empty scopes. Native signing algorithms are preserved. Native claim and extra-token work is explicitly listed below; it remains part of measured cost. Optional hs256 and rs256 profiles only check signing comparability.",
+  "description": "Minimal M2M with client_secret_post, 300-second access tokens and empty scopes. Default benchmark profile checks HS256; provisioning sets the dedicated Keycloak client to HS256. Authentik uses a pre-created service account/app password encoded in client_secret. Legacy provider-secret automatic-account mode must be explicitly selected and measured separately. Native claim and extra-token work remains part of measured cost.",
   "claim_exceptions": {
     "fastid": {
       "typ": "Native access-token type marker."
@@ -7,7 +7,8 @@
     "keycloak": {
       "jti": "Native unique token identifier.",
       "azp": "Native authorized-party client identifier.",
-      "typ": "Native bearer-token type marker."
+      "typ": "Native bearer-token type marker.",
+      "aud": "Explicit benchmark-client audience, required for usable token introspection in the pinned Keycloak version."
     },
     "authentik": {
       "acr": "Native authentication context marker.",

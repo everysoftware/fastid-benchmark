@@ -15,6 +15,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import psutil
 import requests
@@ -47,21 +48,44 @@ def command(args, *, env=None, capture=False, timeout=300):
     return result.stdout if capture else None
 
 
-def compose(cpu, split):
+def compose(cpu, split, database_mode="direct"):
     env = dict(
         os.environ,
         CPU_LIMIT=str(cpu),
         AUTHENTIK_SERVER_CPU_LIMIT=format(cpu * split, ".8f"),
         AUTHENTIK_WORKER_CPU_LIMIT=format(cpu * (1 - split), ".8f"),
     )
-    args = ["docker", "compose", "--env-file", ".env", "--env-file", f"cpu_env/.env.cpu{cpu}"]
+    args = ["docker", "compose", "-f", "docker-compose.yml"]
+    if database_mode == "session":
+        args += ["-f", "docker-compose.session.yml", "--profile", "session"]
+    elif database_mode != "direct":
+        msg = "Unknown database mode"
+        raise ValueError(msg)
+    args += ["--env-file", ".env", "--env-file", f"cpu_env/.env.cpu{cpu}"]
     return args, env
 
 
-def validate_config(config, cpu):
+def database_routes(config):
+    services = config["services"]
+    return {
+        "fastid": urlsplit(services["fastid-server"]["environment"]["FASTID_DB_URL"]).hostname,
+        "keycloak": urlsplit(services["keycloak-server"]["environment"]["KC_DB_URL"].removeprefix("jdbc:")).hostname,
+        "authentik": services["authentik-server"]["environment"]["AUTHENTIK_POSTGRESQL__HOST"],
+        "authentik-worker": services["authentik-worker"]["environment"]["AUTHENTIK_POSTGRESQL__HOST"],
+    }
+
+
+def validate_config(config, cpu, database_mode="direct"):
     services = config["services"]
     for name, service in services.items():
-        if not re.search(r"@sha256:[0-9a-f]{64}$", service["image"]):
+        # FastID is built from the checked-out source and tagged locally. Its
+        # immutable Docker image ID is recorded in deployment.json per trial.
+        local_fastid_build = (
+            name == "fastid-server"
+            and service["image"] == "fastid:prod"
+            and bool(service.get("build"))
+        )
+        if not local_fastid_build and not re.search(r"@sha256:[0-9a-f]{64}$", service["image"]):
             msg = f"{name}: comparison requires an immutable image digest"
             raise ValueError(msg)
     limits = [services[name]["deploy"]["resources"]["limits"] for name in IAM_SERVICES]
@@ -78,12 +102,66 @@ def validate_config(config, cpu):
     if any(float(limit["cpus"]) <= 0 or int(limit["memory"]) <= 0 for limit in limits):
         msg = "Every IAM container needs finite CPU and memory limits"
         raise ValueError(msg)
-    for name in ["postgresql", "redis", "mailpit", *BOUNCERS]:
+    for name in ["postgresql", "redis", "mailpit", *(name for name in BOUNCERS if name in services)]:
         if float(services[name].get("cpus", 0)) <= 0 or int(services[name].get("mem_limit", 0)) <= 0:
             msg = f"{name}: shared dependency needs explicit CPU and memory limits"
             raise ValueError(msg)
+    validate_database_config(config, database_mode)
     if "start-dev" in services["keycloak-server"]["command"]:
         msg = "Keycloak must use production startup"
+        raise ValueError(msg)
+
+
+def validate_database_config(config, database_mode):
+    if database_mode not in {"direct", "session"}:
+        msg = "Unknown database mode"
+        raise ValueError(msg)
+    services = config["services"]
+    routes = database_routes(config)
+    for system, host in routes.items():
+        provider = "authentik" if system == "authentik-worker" else system
+        expected = "postgresql" if database_mode == "direct" else provider + "-pgbouncer"
+        if host != expected:
+            msg_0 = f"{system}: database route disagrees with selected {database_mode} mode"
+            raise ValueError(msg_0)
+        service = services[system if system == "authentik-worker" else system + "-server"]
+        dependencies = service.get("depends_on", {})
+        if expected not in dependencies or (
+            database_mode == "direct" and any(name.endswith("-pgbouncer") for name in dependencies)
+        ):
+            msg_0 = f"{system}: database dependencies disagree with selected {database_mode} mode"
+            raise ValueError(msg_0)
+    if database_mode == "session":
+        pool_settings = []
+        pool_limits = []
+        for name in BOUNCERS:
+            pool = services[name]["environment"]
+            pool_limits.append((float(services[name]["cpus"]), int(services[name]["mem_limit"])))
+            if pool["POOL_MODE"] != "session":
+                msg_0 = "Every pooler must use session mode"
+                raise ValueError(msg_0)
+            pool_settings.append(
+                tuple(
+                    pool[key]
+                    for key in [
+                        "MAX_CLIENT_CONN",
+                        "DEFAULT_POOL_SIZE",
+                        "RESERVE_POOL_SIZE",
+                        "SERVER_IDLE_TIMEOUT",
+                        "SERVER_RESET_QUERY",
+                    ]
+                )
+            )
+        if len(set(pool_settings)) != 1 or len(set(pool_limits)) != 1:
+            msg_0 = "Pooler limits and behavior must match across systems"
+            raise ValueError(msg_0)
+
+
+def validate_runtime_database_mode(deployment, system, database_mode):
+    active = {item["service"] for item in deployment["containers"] if item["service"].endswith("-pgbouncer")}
+    expected = set() if database_mode == "direct" else {system + "-pgbouncer"}
+    if active != expected:
+        msg = "Active poolers disagree with the selected database scenario"
         raise ValueError(msg)
 
 
@@ -145,6 +223,7 @@ def metadata(args, env, config):
         )
     return {
         "containers": result,
+        "database_routes": database_routes(config),
         "tuning": {
             name: {
                 key: value
@@ -158,6 +237,9 @@ def metadata(args, env, config):
                     "FASTID_JWT_ACCESS_EXPIRES_IN",
                     "KC_HTTP_POOL_MAX_THREADS",
                     "KC_DB_POOL_MAX_SIZE",
+                    "AUTHENTIK_POSTGRESQL__HOST",
+                    "AUTHENTIK_POSTGRESQL__CONN_MAX_AGE",
+                    "AUTHENTIK_POSTGRESQL__DISABLE_SERVER_SIDE_CURSORS",
                     "AUTHENTIK_WEB__WORKERS",
                     "AUTHENTIK_WEB__THREADS",
                     "AUTHENTIK_WORKER__PROCESSES",
@@ -308,10 +390,11 @@ def measurement(args, env, trial, options, directory):
 
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--database-mode", choices=["direct", "session"], default="direct")
     parser.add_argument("--systems", nargs="+", choices=SYSTEMS, default=list(SYSTEMS))
     parser.add_argument("--cpus", nargs="+", type=int, choices=[1, 2, 4, 8, 16], default=[1])
     parser.add_argument("--mode", choices=["paced", "saturation", "both"], default="both")
-    parser.add_argument("--signing-profile", choices=["native", "hs256", "rs256"], default="native")
+    parser.add_argument("--signing-profile", choices=["native", "hs256", "rs256"], default="hs256")
     parser.add_argument("--users", type=int, default=100)
     parser.add_argument("--ramp", type=float, default=10)
     parser.add_argument("--warmup", type=float, default=60)
@@ -354,7 +437,7 @@ def main():  # noqa: PLR0912, PLR0915 -- Sequential setup, preflight, trials, an
     schedule = []
     for split in options.splits:
         schedule.extend(
-            dict(**trial, split=split)
+            dict(**trial, split=split, database_mode=options.database_mode)
             for trial in make_schedule(options.systems, options.cpus, modes, options.repeats, options.seed)
         )
     if options.dry_run:
@@ -362,7 +445,7 @@ def main():  # noqa: PLR0912, PLR0915 -- Sequential setup, preflight, trials, an
         return
     # Validate credentials and settings before stopping any running containers.
     for name in options.systems:
-        get_provider(name)
+        get_provider(name).request_data()
     lock_path = ROOT / ".benchmark.lock"
     with lock_path.open("w") as lock:
         try:
@@ -381,7 +464,7 @@ def main():  # noqa: PLR0912, PLR0915 -- Sequential setup, preflight, trials, an
             {
                 "options": vars(options),
                 "schedule": schedule,
-                "signing_comparison": "native defaults; algorithms may differ"
+                "signing_comparison": "configured signing algorithms; algorithms may differ"
                 if options.signing_profile == "native"
                 else options.signing_profile,
                 "host": {"system": platform.system(), "machine": platform.machine(), "cpus": os.cpu_count()},
@@ -396,6 +479,7 @@ def main():  # noqa: PLR0912, PLR0915 -- Sequential setup, preflight, trials, an
                     str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
                     for path in [
                         ROOT / "docker-compose.yml",
+                        ROOT / "docker-compose.session.yml",
                         ROOT / "uv.lock",
                         *sorted((ROOT / "cpu_env").glob(".env.cpu*")),
                         *sorted((ROOT / "fastid_benchmark").glob("*.py")),
@@ -413,16 +497,19 @@ def main():  # noqa: PLR0912, PLR0915 -- Sequential setup, preflight, trials, an
                 for cpu in options.cpus:
                     observed = {}
                     for name in options.systems:
-                        current_args, current_env = compose(cpu, split)
+                        current_args, current_env = compose(cpu, split, options.database_mode)
                         config = json.loads(
                             command([*current_args, "config", "--format", "json"], env=current_env, capture=True)
                         )
-                        validate_config(config, cpu)
+                        validate_config(config, cpu, options.database_mode)
                         command([*current_args, "stop", *IAM_SERVICES, *BOUNCERS, "redis", "mailpit"], env=current_env)
                         command(
                             [*current_args, "up", "-d", "--wait", "--wait-timeout", "240", f"{name}-server"],
                             env=current_env,
                         )
+                        deployment = metadata(current_args, current_env, config)
+                        validate_runtime_database_mode(deployment, name, options.database_mode)
+                        write_json(session / f"preflight_deployment_{name}_cpu{cpu}_split{split}.json", deployment)
                         observed[name] = observe_token(
                             get_provider(name),
                             options.signing_profile,
@@ -444,11 +531,11 @@ def main():  # noqa: PLR0912, PLR0915 -- Sequential setup, preflight, trials, an
                 write_json(session / "status.json", {"state": "preflight_complete"})
                 return
             for index, trial in enumerate(schedule, 1):
-                current_args, current_env = compose(trial["cpu"], trial["split"])
+                current_args, current_env = compose(trial["cpu"], trial["split"], options.database_mode)
                 config = json.loads(
                     command([*current_args, "config", "--format", "json"], env=current_env, capture=True)
                 )
-                validate_config(config, trial["cpu"])
+                validate_config(config, trial["cpu"], options.database_mode)
                 command([*current_args, "stop", *IAM_SERVICES, *BOUNCERS, "redis", "mailpit"], env=current_env)
                 command(
                     [*current_args, "up", "-d", "--wait", "--wait-timeout", "240", f"{trial['system']}-server"],
@@ -456,10 +543,11 @@ def main():  # noqa: PLR0912, PLR0915 -- Sequential setup, preflight, trials, an
                 )
                 directory = (
                     session
-                    / f"{index:03d}_{trial['system']}_cpu{trial['cpu']}_{trial['mode']}_split{trial['split']}_r{trial['repeat']}"
+                    / f"{index:03d}_{trial['system']}_db{trial['database_mode']}_cpu{trial['cpu']}_{trial['mode']}_split{trial['split']}_r{trial['repeat']}"
                 )
                 directory.mkdir()
                 before = metadata(current_args, current_env, config)
+                validate_runtime_database_mode(before, trial["system"], options.database_mode)
                 write_json(directory / "deployment.json", before)
                 observed = observe_token(
                     get_provider(trial["system"]),
@@ -467,7 +555,15 @@ def main():  # noqa: PLR0912, PLR0915 -- Sequential setup, preflight, trials, an
                     policy.get("extra_token_exceptions", {}).get(trial["system"], {}),
                 )
                 reference = baselines[(trial["cpu"], trial["split"])][trial["system"]]
-                stable_fields = ["algorithm", "key_bits", "scopes", "claims", "extra_tokens", "token_type"]
+                stable_fields = [
+                    "client_authentication",
+                    "algorithm",
+                    "key_bits",
+                    "scopes",
+                    "claims",
+                    "extra_tokens",
+                    "token_type",
+                ]
                 if any(observed[field] != reference[field] for field in stable_fields):
                     msg_0 = "Token issuance changed since preflight; refusing to mix trial semantics"
                     raise ValueError(msg_0)  # noqa: TRY301 -- Abort the session on changed issuance costs.
