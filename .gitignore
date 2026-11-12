@@ -164,3 +164,10 @@ cython_debug/
 
 *.env
 certs/
+
+# Benchmark orchestration lock and fresh run artifacts
+.benchmark.lock
+results/runs/
+
+.env.before-fairness
+docs

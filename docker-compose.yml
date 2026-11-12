@@ -8,14 +8,14 @@ services:
       POSTGRES_PASSWORD: ${PG_PASS:?database password required}
       POSTGRES_USER: ${PG_USER:-postgres}
     command: >
-      postgres 
-      -c max_connections=500 
-      -c shared_buffers=4GB 
-      -c effective_cache_size=12GB 
-      -c work_mem=64MB 
-      -c maintenance_work_mem=1GB 
-      -c random_page_cost=1.1 
-      -c effective_io_concurrency=200 
+      postgres
+      -c max_connections=500
+      -c shared_buffers=1GB
+      -c effective_cache_size=3GB
+      -c work_mem=8MB
+      -c maintenance_work_mem=256MB
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
       -c shared_preload_libraries='pg_stat_statements'
       -c idle_in_transaction_session_timeout=60000
       -c statement_timeout=60000
@@ -27,22 +27,24 @@ services:
         - CMD-SHELL
         - pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}
       timeout: 5s
-    image: docker.io/library/postgres:16-alpine
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139}
     restart: unless-stopped
     ports:
       - "6432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    cpus: 2
+    mem_limit: 4g
 
   redis:
     env_file:
       - .env
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE:-redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b}
     command: >
       redis-server
       --requirepass ${REDIS_PASSWORD:?redis password required}
-      --maxmemory 2gb
+      --maxmemory 768mb
       --maxmemory-policy allkeys-lru
       --timeout 0
       --tcp-keepalive 300
@@ -51,19 +53,21 @@ services:
       --save ""
       --appendonly no
       --loglevel warning
-      --io-threads 4
+      --io-threads 1
       --io-threads-do-reads yes
       --activerehashing yes
       --hz 10
       --dynamic-hz yes
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", 'REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli ping | grep -qx PONG']
       interval: 10s
       timeout: 5s
       retries: 5
+    cpus: 1
+    mem_limit: 1g
 
   mailpit:
-    image: axllent/mailpit:v1.30.1
+    image: ${MAILPIT_IMAGE:-axllent/mailpit:v1.30.1@sha256:3bd7c2f2696deb35a4780d152b404dceec99cb041b942c0877b3b22384714f85}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8025/readyz"]
@@ -72,16 +76,21 @@ services:
       retries: 5
       start_period: 10s
 
-  # BOUNCERS
+    cpus: 0.25
+    mem_limit: 128m
+
+  # Optional session poolers
+
   fastid-pgbouncer:
+    profiles: [session]
     env_file:
       - .env
-    image: edoburu/pgbouncer:latest
+    image: ${PGBOUNCER_IMAGE:-edoburu/pgbouncer@sha256:8638aa563607256d3c7440437534195f1066a92b68015d89ae9d6b935b444a6d}
     environment:
       DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASS}@postgresql:5432/${PG_FASTID_DB:-fastid}
       ADMIN_USERS: ${PG_USER:-postgres}
       AUTH_TYPE: scram-sha-256
-      POOL_MODE: transaction
+      POOL_MODE: session
       MAX_CLIENT_CONN: 2000
       DEFAULT_POOL_SIZE: 100
       RESERVE_POOL_SIZE: 10
@@ -98,16 +107,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    cpus: 0.5
+    mem_limit: 256m
 
   keycloak-pgbouncer:
+    profiles: [session]
     env_file:
       - .env
-    image: edoburu/pgbouncer:latest
+    image: ${PGBOUNCER_IMAGE:-edoburu/pgbouncer@sha256:8638aa563607256d3c7440437534195f1066a92b68015d89ae9d6b935b444a6d}
     environment:
       DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASS}@postgresql:5432/${PG_KEYCLOAK_DB:-keycloak}
       ADMIN_USERS: ${PG_USER:-postgres}
       AUTH_TYPE: scram-sha-256
-      POOL_MODE: transaction
+      POOL_MODE: session
       MAX_CLIENT_CONN: 2000
       DEFAULT_POOL_SIZE: 100
       RESERVE_POOL_SIZE: 10
@@ -124,16 +136,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    cpus: 0.5
+    mem_limit: 256m
 
   authentik-pgbouncer:
+    profiles: [session]
     env_file:
       - .env
-    image: edoburu/pgbouncer:latest
+    image: ${PGBOUNCER_IMAGE:-edoburu/pgbouncer@sha256:8638aa563607256d3c7440437534195f1066a92b68015d89ae9d6b935b444a6d}
     environment:
       DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASS}@postgresql:5432/${PG_AUTHENTIK_DB:-authentik}
       ADMIN_USERS: ${PG_USER:-postgres}
       AUTH_TYPE: scram-sha-256
-      POOL_MODE: transaction
+      POOL_MODE: session
       MAX_CLIENT_CONN: 2000
       DEFAULT_POOL_SIZE: 100
       RESERVE_POOL_SIZE: 10
@@ -151,24 +166,29 @@ services:
       timeout: 5s
       retries: 5
 
+    cpus: 0.5
+    mem_limit: 256m
+
   # AUTHENTIK
+
   authentik-server:
     command: server
     depends_on:
-      authentik-pgbouncer:
+      postgresql:
         condition: service_healthy
       authentik-worker:
         condition: service_started
     env_file:
       - .env
     environment:
-      AUTHENTIK_POSTGRESQL__HOST: ${PG_AUTHENTIK_HOST:-authentik-pgbouncer}
+      AUTHENTIK_POSTGRESQL__HOST: ${PG_AUTHENTIK_HOST:-postgresql}
       AUTHENTIK_POSTGRESQL__NAME: ${PG_AUTHENTIK_DB:-authentik}
       AUTHENTIK_POSTGRESQL__PASSWORD: ${PG_PASS}
       AUTHENTIK_POSTGRESQL__USER: ${PG_USER:-postgres}
       AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?secret key required}
+      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:-}
       AUTHENTIK_WEB__WORKERS: ${AUTHENTIK_WEB__WORKERS:-}
-    image: ${AUTHENTIK_IMAGE:-ghcr.io/goauthentik/server}:${AUTHENTIK_TAG:-2026.2.2}
+    image: ${AUTHENTIK_IMAGE:-ghcr.io/goauthentik/server:2026.2.2@sha256:40f0df709957c11324420fa387f1135c427f16086f12ca266b2d883d39c71fe3}
     ports:
       - ${COMPOSE_PORT_HTTP:-9000}:9000
       - ${COMPOSE_PORT_HTTPS:-9443}:9443
@@ -180,22 +200,23 @@ services:
     deploy:
       resources:
         limits:
-          cpus: ${CPU_LIMIT:-0}
+          cpus: ${AUTHENTIK_SERVER_CPU_LIMIT:-0.75}
+          memory: ${AUTHENTIK_SERVER_MEMORY_LIMIT:-3g}
 
   authentik-worker:
     command: worker
     depends_on:
-      authentik-pgbouncer:
+      postgresql:
         condition: service_healthy
     env_file:
       - .env
     environment:
-      AUTHENTIK_POSTGRESQL__HOST: ${PG_AUTHENTIK_HOST:-authentik-pgbouncer}
+      AUTHENTIK_POSTGRESQL__HOST: ${PG_AUTHENTIK_HOST:-postgresql}
       AUTHENTIK_POSTGRESQL__NAME: ${PG_AUTHENTIK_DB:-authentik}
       AUTHENTIK_POSTGRESQL__PASSWORD: ${PG_PASS}
       AUTHENTIK_POSTGRESQL__USER: ${PG_USER:-postgres}
       AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?secret key required}
-    image: ${AUTHENTIK_IMAGE:-ghcr.io/goauthentik/server}:${AUTHENTIK_TAG:-2026.2.2}
+    image: ${AUTHENTIK_IMAGE:-ghcr.io/goauthentik/server:2026.2.2@sha256:40f0df709957c11324420fa387f1135c427f16086f12ca266b2d883d39c71fe3}
     restart: unless-stopped
     shm_size: 512mb
     user: root
@@ -207,31 +228,33 @@ services:
     deploy:
       resources:
         limits:
-          cpus: ${CPU_LIMIT:-0}
+          cpus: ${AUTHENTIK_WORKER_CPU_LIMIT:-0.25}
+          memory: ${AUTHENTIK_WORKER_MEMORY_LIMIT:-1g}
 
   # KEYCLOAK
   keycloak-server:
     env_file:
       - .env
-    image: quay.io/keycloak/keycloak:latest
-    command: [ "start-dev", "--health-enabled=true" ]
+    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak@sha256:723b1d6e254c0fc96d5cffec860c7e0744d6a3277822b865bb538cf891575e41}
+    command: ["start", "--http-enabled=true", "--hostname-strict=false", "--health-enabled=true", "--cache=local"]
     restart: unless-stopped
     environment:
-      KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}
       KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://${PG_KEYCLOAK_HOST:-keycloak-pgbouncer}:5432/${PG_KEYCLOAK_DB:-keycloak}
+      KC_DB_URL: jdbc:postgresql://${PG_KEYCLOAK_HOST:-postgresql}:5432/${PG_KEYCLOAK_DB:-keycloak}
       KC_DB_USERNAME: ${PG_USER:-postgres}
       KC_DB_PASSWORD: ${PG_PASS:?database password required}
+      KC_DB_POOL_MAX_SIZE: ${KC_DB_POOL_MAX_SIZE:-100}
       KC_HTTP_POOL_MAX_THREADS: ${KC_HTTP_POOL_MAX_THREADS:-}
     ports:
       - "8087:8080"
       - "10000:10000"
     depends_on:
-      keycloak-pgbouncer:
+      postgresql:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000;echo -e 'GET /health/ready HTTP/1.1\r\nhost: http://localhost\r\nConnection: close\r\n\r\n' >&3;if [ $? -eq 0 ]; then echo 'Healthcheck Successful';exit 0;else echo 'Healthcheck Failed';exit 1;fi;"]
+      test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'HEAD /health/ready HTTP/1.0\r\n\r\n' >&3; read -r status <&3; [[ \"$$status\" == *' 200 '* ]]"]
       start_period: 10s
       interval: 30s
       retries: 3
@@ -239,17 +262,21 @@ services:
     deploy:
       resources:
         limits:
-          cpus: ${CPU_LIMIT:-0}
+          cpus: ${CPU_LIMIT:-1}
+          memory: ${IAM_MEMORY_LIMIT:-4g}
 
   # FASTID
   fastid-server:
     env_file:
       - .env
-    image: fastid:latest
+    image: ${FASTID_IMAGE:-fastid:prod}
+    build:
+      context: ../fastid
+      dockerfile: docker/Dockerfile
     ports:
       - "8012:8000"
     depends_on:
-      fastid-pgbouncer:
+      postgresql:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -257,18 +284,25 @@ services:
         condition: service_healthy
 
     environment:
-      FASTID_DB_URL: ${FASTID_DB_URL:-postgresql+asyncpg://${PG_USER:-fastid}:${PG_PASS:?database password required}@${PG_FASTID_HOST:-fastid-pgbouncer}:5432/${PG_FASTID_DB:-fastid}}
+      FASTID_DB_URL: ${FASTID_DB_URL:-postgresql+asyncpg://${PG_USER:-postgres}:${PG_PASS:?database password required}@${PG_FASTID_HOST:-postgresql}:5432/${PG_FASTID_DB:-fastid}}
       FASTID_REDIS_URL: ${FASTID_REDIS_URL:-redis://:${REDIS_PASSWORD:?redis password required}@redis:6379/0}
       FASTID_SMTP_ENABLED: ${FASTID_SMTP_ENABLED:-true}
       FASTID_SMTP_HOST: ${FASTID_SMTP_HOST:-mailpit}
       FASTID_SMTP_PORT: ${FASTID_SMTP_PORT:-1025}
+      FASTID_ENV: prod
+      FASTID_DEBUG: "false"
+      FASTID_PUBLIC_URL: ${FASTID_PUBLIC_URL:-http://localhost:8012}
+      FASTID_JWT_ACCESS_EXPIRES_IN: "300"
+      FASTID_DB_POOL_SIZE: ${FASTID_DB_POOL_SIZE:-100}
+      FASTID_REDIS_POOL_SIZE: ${FASTID_REDIS_POOL_SIZE:-50}
       FASTID_GUNICORN_WORKERS: ${FASTID_GUNICORN_WORKERS:-}
+      FASTID_GUNICORN_ACCESS_LOG: ${FASTID_GUNICORN_ACCESS_LOG:-false}
 
     volumes:
       - "./certs:/opt/fastid/certs"
 
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/readiness" ]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/readiness" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -276,7 +310,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: ${CPU_LIMIT:-0}
+          cpus: ${CPU_LIMIT:-1}
+          memory: ${IAM_MEMORY_LIMIT:-4g}
 
 volumes:
   pg_data:
