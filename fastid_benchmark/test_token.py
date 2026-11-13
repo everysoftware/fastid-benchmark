@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 from http import HTTPStatus
 from pathlib import Path
@@ -16,7 +17,7 @@ def arguments(parser):
     parser.add_argument("--workload-mode", choices=["paced", "saturation"], default="paced")
     parser.add_argument("--warmup-seconds", type=float, default=60)
     parser.add_argument("--measurement-seconds", type=float, default=120)
-    parser.add_argument("--request-timeout", type=float, default=15)
+    parser.add_argument("--request-timeout", type=float, default=10)
     parser.add_argument("--phase-file", default="")
 
 
@@ -101,6 +102,19 @@ class TokenUser(HttpUser):
             if response.status_code == 0:
                 # Log the exception class, without URLs or potentially sensitive exception text.
                 cause = type(response.error).__name__ if response.error else "UnknownTransportError"
+                if cause == "ConnectionError":
+                    pending = [response.error]
+                    classes = []
+                    seen = set()
+                    while pending:
+                        error = pending.pop()
+                        if not isinstance(error, BaseException) or id(error) in seen:
+                            continue
+                        seen.add(id(error))
+                        classes.append(type(error).__name__)
+                        pending.extend(error.args)
+                        pending.extend([error.__cause__, error.__context__])
+                    logging.getLogger(__name__).warning("Transport exception classes: %s", classes)
                 response.failure(f"Transport error: {cause}")
                 return
             if response.status_code != HTTPStatus.OK:

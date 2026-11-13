@@ -184,7 +184,7 @@ class ResourceQualityTests(unittest.TestCase):
         ):
             options = arguments()
         self.assertIsNone(options.locust_processes)
-        self.assertEqual(options.request_timeout, 15)
+        self.assertEqual(options.request_timeout, 10)
         options.locust_processes = None
         master, workers = locust_commands({"system": "fastid", "mode": "saturation", "cpu": 2}, options, Path("/tmp/trial"))
         self.assertEqual(master[master.index("--expect-workers") + 1], "2")

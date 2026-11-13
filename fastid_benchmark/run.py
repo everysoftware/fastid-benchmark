@@ -495,7 +495,7 @@ def arguments():
     )
     parser.add_argument("--ramp", type=float, default=10)
     parser.add_argument("--warmup", type=float, default=60)
-    parser.add_argument("--request-timeout", type=float, default=15)
+    parser.add_argument("--request-timeout", type=float, default=10)
     parser.add_argument("--duration", type=float, default=120)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--seed", type=int, default=20261111)

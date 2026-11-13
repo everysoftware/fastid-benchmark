@@ -31,7 +31,7 @@ class TokenHandler(BaseHTTPRequestHandler):
 
 
 class LocustPhaseTests(unittest.TestCase):
-    def test_locust_request_timeout_defaults_to_15_seconds(self):
+    def test_locust_request_timeout_defaults_to_10_seconds(self):
         value = subprocess.check_output(
             [
                 sys.executable,
@@ -42,7 +42,7 @@ class LocustPhaseTests(unittest.TestCase):
             ],
             text=True,
         )
-        self.assertEqual(value.strip(), "15")
+        self.assertEqual(value.strip(), "10")
 
     def test_distributed_locust_resets_all_worker_stats_after_warmup(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), TokenHandler)

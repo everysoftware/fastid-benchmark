@@ -125,7 +125,7 @@ generator saturation remains visible.
 For benchmark runs, FastID defaults to two Gunicorn workers per allocated CPU
 while preserving its CPU quota (`CPU=4` starts 8 workers). In a CPU=4 saturation
 control, this reduced `ReadTimeout` failures from 1,170 to 1 with no load-generator
-saturation flag. The Locust request deadline defaults to 15 seconds; a
+saturation flag. The Locust request deadline defaults to 10 seconds; a
 `ReadTimeout` means a response exceeded that deadline, not that FastID returned
 an application error. Set `FASTID_GUNICORN_WORKERS` or `--request-timeout` to
 override these settings for a separate tuning run.
@@ -271,5 +271,6 @@ comparison. The standard `compare` matrix is reserved for explicit full comparis
 make test-token NAME=fastid CPU=1 MODE=saturation USERS=100 RAMP=20 DURATION=75 WARMUP=15
 ```
 
-Keep different image versions and workload lengths in separate sessions. See
-[changes and validation](docs/superpowers/reviews/fastid-db-fixes.md).
+Keep different image versions and workload lengths in separate sessions. The
+private implementation reviews are stored under notes/superpowers/ and are not
+part of the public documentation site.

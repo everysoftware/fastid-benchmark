@@ -171,3 +171,5 @@ results/runs/
 
 .env.before-fairness
 docs
+/notes/
+/results/diagnostics/
