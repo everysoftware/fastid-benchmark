@@ -1,0 +1,26 @@
+# Common session-pooling scenario; use with the base file and --profile session.
+services:
+  fastid-server:
+    environment:
+      FASTID_DB_URL: postgresql+asyncpg://${PG_USER:-postgres}:${PG_PASS:?database password required}@fastid-pgbouncer:5432/${PG_FASTID_DB:-fastid}
+    depends_on:
+      fastid-pgbouncer:
+        condition: service_healthy
+  keycloak-server:
+    environment:
+      KC_DB_URL: jdbc:postgresql://keycloak-pgbouncer:5432/${PG_KEYCLOAK_DB:-keycloak}
+    depends_on:
+      keycloak-pgbouncer:
+        condition: service_healthy
+  authentik-server:
+    environment:
+      AUTHENTIK_POSTGRESQL__HOST: authentik-pgbouncer
+    depends_on:
+      authentik-pgbouncer:
+        condition: service_healthy
+  authentik-worker:
+    environment:
+      AUTHENTIK_POSTGRESQL__HOST: authentik-pgbouncer
+    depends_on:
+      authentik-pgbouncer:
+        condition: service_healthy
